@@ -1,296 +1,469 @@
 #include <windows.h>
 #include <iostream>
-#include <memory>
+#include <string>
+#include <vector>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <cstdio>
+#include <ctime>
+#include <unistd.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <algorithm>
 
-#include "GameAnalyzer.h"
-#include "external/imgui/backends/imgui_impl_win32.h"
-#include "external/imgui/backends/imgui_impl_opengl3.h"
+// Real process information structure
+struct ProcessInfo {
+    DWORD pid;
+    std::string name;
+    std::string windowTitle;
+    
+    ProcessInfo(DWORD p, const std::string& n, const std::string& w = "") 
+        : pid(p), name(n), windowTitle(w) {}
+};
 
-// Forward declare message handler
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+// Real memory reading functionality
+class MemoryReader {
+public:
+    static bool readMemory(DWORD pid, uintptr_t address, void* buffer, size_t size) {
+        HANDLE hProcess = OpenProcess(PROCESS_VM_READ, FALSE, pid);
+        if (!hProcess) {
+            return false;
+        }
+        
+        SIZE_T bytesRead;
+        bool success = ReadProcessMemory(hProcess, (LPCVOID)address, buffer, size, &bytesRead);
+        CloseHandle(hProcess);
+        
+        return success && (bytesRead == size);
+    }
+};
 
-class GameAnalyzerApp {
+// Enhanced GUI with real process functionality
+class RealGameAnalyzerGUI {
 private:
     HWND hwnd;
-    HDC hdc;
-    HGLRC hglrc;
-    std::unique_ptr<GameAnalyzer> analyzer;
-    bool running;
-    std::thread updateThread;
-
+    HWND hListBox;
+    HWND hAddButton;
+    HWND hStartButton;
+    HWND hExportButton;
+    HWND hRefreshButton;
+    HWND hStatusLabel;
+    HWND hMemList;
+    HWND hAddressEdit;
+    HWND hNameEdit;
+    HWND hSearchEdit;
+    
+    std::vector<ProcessInfo> processes;
+    std::vector<std::pair<std::string, uintptr_t>> memoryAddresses;
+    std::atomic<bool> monitoring;
+    ProcessInfo* selectedProcess;
+    bool showSystemProcesses;
+    
 public:
-    GameAnalyzerApp() : hwnd(nullptr), hdc(nullptr), hglrc(nullptr), running(false) {
-        analyzer = std::make_unique<GameAnalyzer>();
+    RealGameAnalyzerGUI() : hwnd(nullptr), monitoring(false), selectedProcess(nullptr), showSystemProcesses(false) {
+        refreshProcesses();
     }
-
-    ~GameAnalyzerApp() {
-        cleanup();
-    }
-
-    bool initialize() {
-        if (!createWindow()) {
-            std::cerr << "Failed to create window" << std::endl;
-            return false;
-        }
-
-        if (!initializeOpenGL()) {
-            std::cerr << "Failed to initialize OpenGL" << std::endl;
-            return false;
-        }
-
-        if (!initializeImGui()) {
-            std::cerr << "Failed to initialize ImGui" << std::endl;
-            return false;
-        }
-
-        if (!analyzer->initialize()) {
-            std::cerr << "Failed to initialize game analyzer" << std::endl;
-            return false;
-        }
-
-        return true;
-    }
-
-    void run() {
-        running = true;
-        
-        // Start update thread for non-blocking operations
-        updateThread = std::thread([this]() {
-            while (running) {
-                analyzer->update();
-                std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
-            }
-        });
-
-        // Main message loop
-        MSG msg = {};
-        while (running && GetMessage(&msg, nullptr, 0, 0)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
-
-private:
+    
     bool createWindow() {
         WNDCLASSEX wc = {};
         wc.cbSize = sizeof(WNDCLASSEX);
-        wc.style = CS_CLASSDC;
-        wc.lpfnWndProc = WndProc;
-        wc.cbClsExtra = 0;
-        wc.cbWndExtra = 0;
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = WindowProc;
         wc.hInstance = GetModuleHandle(nullptr);
-        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.lpszMenuName = nullptr;
-        wc.lpszClassName = L"GameAnalyzer";
-        wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
-
+        wc.lpszClassName = "RealGameAnalyzerWindow";
+        
         if (!RegisterClassEx(&wc)) {
             return false;
         }
-
+        
         hwnd = CreateWindowEx(
             0,
-            L"GameAnalyzer",
-            L"Game Analyzer - C++",
+            "RealGameAnalyzerWindow",
+            "Game Analyzer - Real Process Monitor",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT,
-            1200, 800,
+            900, 700,
             nullptr, nullptr,
             GetModuleHandle(nullptr),
             this
         );
-
+        
         if (!hwnd) {
             return false;
         }
-
-        ShowWindow(hwnd, SW_SHOWDEFAULT);
+        
+        createControls();
+        ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
-
-        return true;
-    }
-
-    bool initializeOpenGL() {
-        hdc = GetDC(hwnd);
-
-        PIXELFORMATDESCRIPTOR pfd = {};
-        pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
-        pfd.nVersion = 1;
-        pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-        pfd.iPixelType = PFD_TYPE_RGBA;
-        pfd.cColorBits = 32;
-        pfd.cDepthBits = 24;
-        pfd.cStencilBits = 8;
-
-        int pixelFormat = ChoosePixelFormat(hdc, &pfd);
-        if (!pixelFormat) {
-            return false;
-        }
-
-        if (!SetPixelFormat(hdc, pixelFormat, &pfd)) {
-            return false;
-        }
-
-        hglrc = wglCreateContext(hdc);
-        if (!hglrc) {
-            return false;
-        }
-
-        if (!wglMakeCurrent(hdc, hglrc)) {
-            return false;
-        }
-
-        // Initialize OpenGL extensions
-        if (!gladLoadGL()) {
-            return false;
-        }
-
-        return true;
-    }
-
-    bool initializeImGui() {
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImPlot::CreateContext();
         
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-
-        // Setup Dear ImGui style
-        ImGui::StyleColorsDark();
-
-        // Setup Platform/Renderer backends
-        if (!ImGui_ImplWin32_Init(hwnd)) {
-            return false;
-        }
-        if (!ImGui_ImplOpenGL3_Init("#version 130")) {
-            return false;
-        }
-
         return true;
     }
-
-    void cleanup() {
-        running = false;
+    
+    void createControls() {
+        // Process List
+        CreateWindow("STATIC", "Select Process:", WS_VISIBLE | WS_CHILD,
+            20, 20, 120, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        if (updateThread.joinable()) {
-            updateThread.join();
-        }
-
-        if (analyzer) {
-            analyzer->shutdown();
-        }
-
-        // Cleanup ImGui
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImPlot::DestroyContext();
-        ImGui::DestroyContext();
-
-        // Cleanup OpenGL
-        if (hglrc) {
-            wglMakeCurrent(nullptr, nullptr);
-            wglDeleteContext(hglrc);
-        }
-        if (hdc) {
-            ReleaseDC(hwnd, hdc);
-        }
-        if (hwnd) {
-            DestroyWindow(hwnd);
-        }
+        hListBox = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL,
+            20, 50, 300, 200, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hRefreshButton = CreateWindow("BUTTON", "Refresh Processes", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            330, 50, 120, 25, hwnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
+        
+        CreateWindow("BUTTON", "Show System Processes", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            330, 80, 150, 25, hwnd, (HMENU)5, GetModuleHandle(nullptr), nullptr);
+        
+        // Search functionality
+        CreateWindow("STATIC", "Search:", WS_VISIBLE | WS_CHILD,
+            20, 260, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hSearchEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            70, 260, 200, 25, hwnd, (HMENU)6, GetModuleHandle(nullptr), nullptr);
+        
+        // Populate process list
+        refreshProcessList();
+        
+        // Memory Address Input
+        CreateWindow("STATIC", "Add Memory Address:", WS_VISIBLE | WS_CHILD,
+            20, 295, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        CreateWindow("STATIC", "Address (hex):", WS_VISIBLE | WS_CHILD,
+            20, 325, 100, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hAddressEdit = CreateWindow("EDIT", "0x", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            20, 350, 150, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        CreateWindow("STATIC", "Name:", WS_VISIBLE | WS_CHILD,
+            180, 325, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hNameEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            180, 350, 100, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Buttons
+        hAddButton = CreateWindow("BUTTON", "Add Address", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            20, 385, 100, 30, hwnd, (HMENU)1, GetModuleHandle(nullptr), nullptr);
+        
+        hStartButton = CreateWindow("BUTTON", "Start Monitoring", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            130, 385, 120, 30, hwnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
+        
+        hExportButton = CreateWindow("BUTTON", "Export Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            260, 385, 100, 30, hwnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
+        
+        // Status Label
+        hStatusLabel = CreateWindow("STATIC", "Ready - Select a process to begin", WS_VISIBLE | WS_CHILD,
+            20, 425, 500, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Memory Addresses List
+        CreateWindow("STATIC", "Memory Addresses:", WS_VISIBLE | WS_CHILD,
+            20, 455, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hMemList = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL,
+            20, 485, 500, 150, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Add some sample memory addresses
+        addMemoryAddress("0x12345678", "Health");
+        addMemoryAddress("0x87654321", "Ammo");
+        addMemoryAddress("0xABCDEF00", "Score");
     }
-
-    static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
+    
+    bool isUserApplication(const std::string& processName) {
+        std::string lowerName = processName;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+        
+        // Comprehensive list of system/background processes to exclude
+        std::vector<std::string> systemProcesses = {
+            "system", "idle", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+            "services.exe", "lsass.exe", "svchost.exe", "dwm.exe", "explorer.exe",
+            "taskhost.exe", "taskhostw.exe", "runtimebroker.exe", "searchapp.exe",
+            "conhost.exe", "audiodg.exe", "spoolsv.exe", "dllhost.exe", "wmiprvse.exe",
+            "sihost.exe", "ctfmon.exe", "fontdrvhost.exe", "registry", "memory compression",
+            "secure system", "nvcontainer.exe", "nvidia web helper.exe", "razer synapse",
+            "asusoptimizationstartup", "asus_framework.exe", "textinputhost.exe",
+            "securityhealthsystray.exe", "startmenuexperiencehost.exe", "steamwebhelper.exe",
+            "steamservice.exe", "steamclient", "steamerrorreporter", "steamtours",
+            "steamcompositor", "steamoverlayui", "steamwebhelper", "steamworks",
+            "nvidia", "amd", "intel", "microsoft", "windows", "system32", "syswow64",
+            "program files", "programdata", "appdata", "localappdata", "temp",
+            "antimalware", "defender", "security", "update", "installer", "setup",
+            "service", "daemon", "helper", "agent", "monitor", "tray", "notification",
+            "background", "host", "broker", "manager", "controller", "driver",
+            "framework", "runtime", "core", "engine", "platform", "sdk", "api"
+        };
+        
+        // Check if it's a system process
+        for (const auto& sysProc : systemProcesses) {
+            if (lowerName.find(sysProc) != std::string::npos) {
+                return false;
+            }
+        }
+        
+        // Only include processes that look like actual user applications
+        // Must have .exe extension and not be in system directories
+        if (lowerName.find(".exe") != std::string::npos) {
+            // Exclude if it contains system-related keywords
+            if (lowerName.find("system") != std::string::npos ||
+                lowerName.find("windows") != std::string::npos ||
+                lowerName.find("microsoft") != std::string::npos ||
+                lowerName.find("service") != std::string::npos ||
+                lowerName.find("helper") != std::string::npos ||
+                lowerName.find("host") != std::string::npos ||
+                lowerName.find("broker") != std::string::npos ||
+                lowerName.find("container") != std::string::npos ||
+                lowerName.find("framework") != std::string::npos ||
+                lowerName.find("optimization") != std::string::npos ||
+                lowerName.find("synapse") != std::string::npos ||
+                lowerName.find("webhelper") != std::string::npos) {
+                return false;
+            }
             return true;
         }
-
-        GameAnalyzerApp* app = nullptr;
-        if (msg == WM_NCCREATE) {
-            CREATESTRUCT* cs = reinterpret_cast<CREATESTRUCT*>(lParam);
-            app = reinterpret_cast<GameAnalyzerApp*>(cs->lpCreateParams);
-            SetWindowLongPtr(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+        
+        return false;
+    }
+    
+    void refreshProcesses() {
+        processes.clear();
+        
+        // Get all processes
+        DWORD processIds[1024];
+        DWORD cbNeeded;
+        
+        if (EnumProcesses(processIds, sizeof(processIds), &cbNeeded)) {
+            DWORD processCount = cbNeeded / sizeof(DWORD);
+            
+            for (DWORD i = 0; i < processCount; i++) {
+                if (processIds[i] != 0) {
+                    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processIds[i]);
+                    if (hProcess) {
+                        char processName[MAX_PATH] = {0};
+                        if (GetModuleBaseName(hProcess, nullptr, processName, sizeof(processName))) {
+                            std::string name = processName;
+                            if (showSystemProcesses || isUserApplication(name)) {
+                                processes.push_back(ProcessInfo(processIds[i], name));
+                            }
+                        }
+                        CloseHandle(hProcess);
+                    }
+                }
+            }
+        }
+    }
+    
+    void refreshProcessList() {
+        SendMessage(hListBox, LB_RESETCONTENT, 0, 0);
+        
+        // Get search text
+        char searchText[256];
+        GetWindowText(hSearchEdit, searchText, sizeof(searchText));
+        std::string search = searchText;
+        std::transform(search.begin(), search.end(), search.begin(), ::tolower);
+        
+        for (const auto& process : processes) {
+            std::string display = process.name + " (PID: " + std::to_string(process.pid) + ")";
+            
+            // If search is empty or process name contains search text, add it
+            if (search.empty()) {
+                SendMessage(hListBox, LB_ADDSTRING, 0, (LPARAM)display.c_str());
+            } else {
+                std::string processName = process.name;
+                std::transform(processName.begin(), processName.end(), processName.begin(), ::tolower);
+                if (processName.find(search) != std::string::npos) {
+                    SendMessage(hListBox, LB_ADDSTRING, 0, (LPARAM)display.c_str());
+                }
+            }
+        }
+    }
+    
+    void addMemoryAddress(const std::string& address, const std::string& name) {
+        uintptr_t addr = std::stoull(address, nullptr, 16);
+        memoryAddresses.push_back({name, addr});
+        
+        std::string display = address + " - " + name;
+        SendMessage(hMemList, LB_ADDSTRING, 0, (LPARAM)display.c_str());
+    }
+    
+    void run() {
+        MSG msg = {};
+        while (GetMessage(&msg, nullptr, 0, 0)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+    
+    void onButtonClick(int buttonId) {
+        switch (buttonId) {
+            case 1: // Add Memory Address
+                addMemoryAddressFromInput();
+                break;
+            case 2: // Start/Stop Monitoring
+                toggleMonitoring();
+                break;
+            case 3: // Export Data
+                exportData();
+                break;
+            case 4: // Refresh Processes
+                refreshProcesses();
+                refreshProcessList();
+                SetWindowText(hStatusLabel, "Process list refreshed");
+                break;
+            case 5: // Toggle System Processes
+                showSystemProcesses = !showSystemProcesses;
+                refreshProcesses();
+                refreshProcessList();
+                char status[100];
+                sprintf(status, "System processes %s", showSystemProcesses ? "shown" : "hidden");
+                SetWindowText(hStatusLabel, status);
+                break;
+            case 6: // Search text changed
+                refreshProcessList();
+                break;
+        }
+    }
+    
+    void onProcessSelection() {
+        int sel = SendMessage(hListBox, LB_GETCURSEL, 0, 0);
+        if (sel != LB_ERR && sel < (int)processes.size()) {
+            selectedProcess = &processes[sel];
+            char status[200];
+            sprintf(status, "Selected: %s (PID: %d)", selectedProcess->name.c_str(), selectedProcess->pid);
+            SetWindowText(hStatusLabel, status);
+        }
+    }
+    
+    void addMemoryAddressFromInput() {
+        char address[256], name[256];
+        GetWindowText(hAddressEdit, address, sizeof(address));
+        GetWindowText(hNameEdit, name, sizeof(name));
+        
+        if (strlen(address) > 2 && strlen(name) > 0) {
+            addMemoryAddress(address, name);
+            SetWindowText(hAddressEdit, "0x");
+            SetWindowText(hNameEdit, "");
+            SetWindowText(hStatusLabel, "Memory address added successfully");
         } else {
-            app = reinterpret_cast<GameAnalyzerApp*>(GetWindowLongPtr(hWnd, GWLP_USERDATA));
+            SetWindowText(hStatusLabel, "Please enter both address and name");
         }
-
-        switch (msg) {
-        case WM_SIZE:
-            if (app && wParam != SIZE_MINIMIZED) {
-                app->onResize(LOWORD(lParam), HIWORD(lParam));
-            }
-            return 0;
-
-        case WM_DESTROY:
-            if (app) {
-                app->running = false;
-            }
-            PostQuitMessage(0);
-            return 0;
-        }
-
-        return DefWindowProc(hWnd, msg, wParam, lParam);
     }
-
-    void onResize(int width, int height) {
-        glViewport(0, 0, width, height);
-    }
-
-    void render() {
-        // Start the Dear ImGui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-
-        // Render the game analyzer UI
-        analyzer->render();
-
-        // Rendering
-        ImGui::Render();
-        glViewport(0, 0, (int)ImGui::GetIO().DisplaySize.x, (int)ImGui::GetIO().DisplaySize.y);
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        // Update and Render additional Platform Windows
-        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
+    
+    void toggleMonitoring() {
+        if (!selectedProcess) {
+            SetWindowText(hStatusLabel, "Please select a process first");
+            return;
         }
-
-        SwapBuffers(hdc);
+        
+        if (monitoring) {
+            monitoring = false;
+            SetWindowText(hStartButton, "Start Monitoring");
+            SetWindowText(hStatusLabel, "Monitoring stopped.");
+        } else {
+            monitoring = true;
+            SetWindowText(hStartButton, "Stop Monitoring");
+            SetWindowText(hStatusLabel, "Monitoring started...");
+            
+            // Start monitoring thread
+            std::thread([this]() {
+                int sample = 0;
+                while (monitoring && selectedProcess) {
+                    char status[200];
+                    sprintf(status, "Monitoring %s... Sample %d", selectedProcess->name.c_str(), sample);
+                    SetWindowText(hStatusLabel, status);
+                    
+                    // Try to read memory from selected process
+                    for (const auto& memAddr : memoryAddresses) {
+                        int32_t value;
+                        if (MemoryReader::readMemory(selectedProcess->pid, memAddr.second, &value, sizeof(value))) {
+                            // Successfully read memory
+                            char memStatus[300];
+                            sprintf(memStatus, "%s: %s = %d", status, memAddr.first.c_str(), value);
+                            SetWindowText(hStatusLabel, memStatus);
+                        }
+                    }
+                    
+                    sample++;
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+            }).detach();
+        }
+    }
+    
+    void exportData() {
+        SetWindowText(hStatusLabel, "Exporting data to game_analysis.csv...");
+        
+        FILE* file = fopen("game_analysis.csv", "w");
+        if (file) {
+            fprintf(file, "Timestamp,Process,Address,Name,Value\n");
+            
+            time_t now = time(0);
+            char timestamp[100];
+            strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+            
+            if (selectedProcess) {
+                for (const auto& memAddr : memoryAddresses) {
+                    int32_t value = 0;
+                    if (MemoryReader::readMemory(selectedProcess->pid, memAddr.second, &value, sizeof(value))) {
+                        fprintf(file, "%s,%s,0x%llX,%s,%d\n", 
+                               timestamp, selectedProcess->name.c_str(), 
+                               (unsigned long long)memAddr.second, memAddr.first.c_str(), value);
+                    }
+                }
+            }
+            
+            fclose(file);
+            
+            char status[200];
+            char cwd[256];
+            getcwd(cwd, sizeof(cwd));
+            sprintf(status, "Data exported to: %s/game_analysis.csv", cwd);
+            SetWindowText(hStatusLabel, status);
+        } else {
+            SetWindowText(hStatusLabel, "Error: Could not create export file!");
+        }
+    }
+    
+    static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        RealGameAnalyzerGUI* pThis = nullptr;
+        
+        if (uMsg == WM_NCCREATE) {
+            CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
+            pThis = (RealGameAnalyzerGUI*)pCreate->lpCreateParams;
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        } else {
+            pThis = (RealGameAnalyzerGUI*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        }
+        
+        if (pThis) {
+            switch (uMsg) {
+                case WM_COMMAND:
+                    if (HIWORD(wParam) == BN_CLICKED) {
+                        pThis->onButtonClick(LOWORD(wParam));
+                    } else if (HIWORD(wParam) == LBN_SELCHANGE && LOWORD(wParam) == 0) {
+                        pThis->onProcessSelection();
+                    } else if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 6) {
+                        // Search text changed
+                        pThis->refreshProcessList();
+                    }
+                    break;
+                case WM_DESTROY:
+                    PostQuitMessage(0);
+                    return 0;
+            }
+        }
+        
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
     }
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Enable console for debugging in debug builds
-    #ifdef _DEBUG
-    AllocConsole();
-    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-    freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
-    freopen_s((FILE**)stdin, "CONIN$", "r", stdin);
-    #endif
-
-    try {
-        GameAnalyzerApp app;
-        
-        if (!app.initialize()) {
-            std::cerr << "Failed to initialize application" << std::endl;
-            return -1;
-        }
-
-        app.run();
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
-        return -1;
+    RealGameAnalyzerGUI app;
+    
+    if (!app.createWindow()) {
+        MessageBox(nullptr, "Failed to create window!", "Error", MB_OK | MB_ICONERROR);
+        return 1;
     }
-
+    
+    app.run();
     return 0;
 }

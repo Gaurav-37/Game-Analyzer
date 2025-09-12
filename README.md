@@ -1,234 +1,149 @@
-# Game Analyzer - C++ Native Application
+# Game Analyzer
 
-A high-performance, lightweight desktop application for monitoring and analyzing numerical changes in games. Built with C++ for maximum speed and minimal resource usage.
+A lightweight, fast Windows application for monitoring and analyzing memory values in running games and applications.
 
-## 🚀 Performance Benefits
+## Features
 
-- **Memory Usage**: ~8MB (vs 150MB+ Electron)
-- **CPU Usage**: ~1-2% (vs 5-8% Electron)
-- **Startup Time**: <1 second (vs 3-5 seconds Electron)
-- **Memory Read Speed**: <1ms (vs 10-50ms Electron)
-- **Binary Size**: ~5MB (vs 200MB+ Electron)
+- **Real Process Monitoring**: Shows actual running applications (filters out system processes)
+- **Smart Search**: Find processes quickly by typing part of their name
+- **Memory Reading**: Actually reads memory from selected processes using Windows API
+- **Live Monitoring**: Real-time monitoring of memory values
+- **Data Export**: Export collected data to CSV files
+- **Lightweight**: Only ~115KB executable
+- **Professional UI**: Clean Windows GUI interface
 
-## ✨ Features
+## Quick Start
 
-- **Real-time Memory Monitoring**: Direct Windows API memory reading
-- **Process Selection**: Easy game process enumeration and selection
-- **Live Charts**: Real-time data visualization with ImPlot
-- **Multiple Data Types**: Support for int32, float, and double values
-- **Data Export**: CSV, JSON, and binary export formats
-- **Configuration Management**: Persistent settings and memory addresses
-- **Lightweight GUI**: ImGui-based immediate mode interface
-- **Memory Scanning**: Built-in memory scanning capabilities
+### For Users (Download & Run)
+1. Download `GameAnalyzer.exe` from the releases
+2. Run the executable
+3. Select a process from the list
+4. Add memory addresses you want to monitor
+5. Start monitoring and export data
 
-## 🛠️ Requirements
+### For Developers (Build from Source)
 
-- **Windows 10/11** (x64)
-- **Visual Studio 2022** or **Visual Studio Build Tools**
-- **CMake 3.16+**
-- **Git** (for cloning dependencies)
+#### Prerequisites
+- Windows 10/11
+- GCC/G++ compiler (Cygwin, MinGW, or Visual Studio)
+- Git (for downloading dependencies)
 
-## 📦 Installation
+#### Setup
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd Game-Analyzer
+   ```
 
-### 1. Clone the Repository
-```bash
-git clone <repository-url>
-cd GameAnalyzer
-```
+2. Setup dependencies:
+   ```bash
+   setup_dependencies.bat
+   ```
 
-### 2. Install Dependencies
-The application uses the following external libraries:
-- **Dear ImGui** - Immediate mode GUI
-- **ImPlot** - Plotting library for ImGui
-- **OpenGL** - Graphics rendering
-- **Windows API** - System integration
+3. Build the application:
+   ```bash
+   build_final.bat
+   ```
 
-### 3. Build the Application
-```bash
-# Option 1: Use the build script
-build.bat
+## Usage
 
-# Option 2: Manual build
-mkdir build
-cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
-```
+### Selecting a Process
+1. Launch the application
+2. Use the search bar to find specific applications
+3. Click on a process to select it
+4. The status bar will show your selection
 
-### 4. Run the Application
-```bash
-GameAnalyzer.exe
-```
+### Adding Memory Addresses
+1. Enter memory address in hex format (e.g., `0x12345678`)
+2. Give it a descriptive name (e.g., "Health", "Score")
+3. Click "Add Address"
 
-## 🎮 Usage
+### Monitoring
+1. Click "Start Monitoring" to begin reading memory
+2. Watch real-time values in the status bar
+3. Click "Stop Monitoring" to end
 
-### 1. Select Game Process
-- Click "Select Process" to open the process list
-- Choose your game from the running processes
-- The application will connect to the selected process
+### Exporting Data
+1. Click "Export Data" to save to CSV
+2. File will be saved as `game_analysis.csv` in the application directory
+3. Open in Excel or any spreadsheet application
 
-### 2. Configure Memory Addresses
-- Click "Add Address" to add memory locations to monitor
-- Enter the memory address in hexadecimal format (e.g., `0x12345678`)
-- Give it a descriptive name (e.g., "Health", "Score")
-- Select the data type (32-bit Integer, Float, or Double)
+## Technical Details
 
-### 3. Start Monitoring
-- Click "Start Monitoring" to begin tracking values
-- Watch real-time updates in the current values panel
-- View live charts showing value changes over time
-
-### 4. Data Management
-- **Save Configuration**: Export your session data as JSON
-- **Load Configuration**: Import previously saved data files
-- **Export Data**: Create CSV files for external analysis
-
-## ⚙️ Configuration
-
-### Settings
-- **Update Interval**: Control how frequently memory is read (10ms - 5000ms)
-- **Max Data Points**: Limit the number of data points to prevent memory issues
-- **Auto Save**: Automatically save data at regular intervals
-- **Chart Settings**: Customize chart appearance and behavior
-
-### Memory Address Format
-Memory addresses should be entered in hexadecimal format:
-- `0x12345678` - Valid
-- `12345678` - Valid (will be converted)
-- `0x12345678h` - Valid
-
-### Data Types
-- **32-bit Integer**: Standard integer values
-- **Float**: Single-precision floating point
-- **Double**: Double-precision floating point
-
-## 📁 Project Structure
-
-```
-GameAnalyzer/
-├── src/                    # Source code
-│   ├── main.cpp           # Application entry point
-│   ├── GameAnalyzer.cpp   # Main application logic
-│   ├── GameAnalyzer.h     # Main application header
-│   ├── MemoryReader.cpp   # Memory reading implementation
-│   ├── MemoryReader.h     # Memory reading header
-│   ├── ProcessManager.cpp # Process management
-│   ├── ProcessManager.h   # Process management header
-│   ├── DataExporter.cpp   # Data export functionality
-│   ├── DataExporter.h     # Data export header
-│   ├── ChartRenderer.cpp  # Chart rendering
-│   ├── ChartRenderer.h    # Chart rendering header
-│   ├── ConfigManager.cpp  # Configuration management
-│   └── ConfigManager.h    # Configuration header
-├── external/              # External dependencies
-│   ├── imgui/            # Dear ImGui library
-│   └── implot/           # ImPlot library
-├── CMakeLists.txt        # Build configuration
-├── build.bat            # Windows build script
-└── README.md            # This file
-```
-
-## 🔧 Technical Details
-
-### Architecture
 - **Language**: C++17
-- **GUI Framework**: Dear ImGui (immediate mode)
-- **Graphics**: OpenGL 3.3+
-- **Memory Access**: Windows API (ReadProcessMemory)
-- **Build System**: CMake
-- **Compiler**: MSVC 2022
+- **GUI Framework**: Win32 API
+- **Memory Reading**: Windows API (`ReadProcessMemory`)
+- **Process Enumeration**: Windows API (`EnumProcesses`)
+- **Build System**: GCC/G++ with batch scripts
 
-### Memory Reading
-The application uses direct Windows API calls for memory access:
-```cpp
-BOOL ReadProcessMemory(
-    HANDLE hProcess,
-    LPCVOID lpBaseAddress,
-    LPVOID lpBuffer,
-    SIZE_T nSize,
-    SIZE_T* lpNumberOfBytesRead
-);
+## File Structure
+
+```
+Game Analyzer/
+├── GameAnalyzer.exe          # Main application
+├── src/main.cpp              # Source code
+├── external/imgui/           # ImGui dependencies
+├── build_final.bat           # Build script
+├── setup_dependencies.bat    # Dependency setup
+├── create_release.bat        # Release builder
+├── installer.bat             # Simple installer
+├── README.md                 # This file
+└── LICENSE                   # MIT License
 ```
 
-### Performance Optimizations
-- **Direct API Calls**: No Node.js or Electron overhead
-- **Efficient Data Structures**: STL containers with optimal memory usage
-- **Real-time Updates**: Sub-millisecond memory reading
-- **Minimal GUI Overhead**: ImGui's immediate mode rendering
+## Building
 
-## 🚨 Security Notes
+The project uses a simple batch-based build system:
 
-- This application requires elevated privileges to read process memory
-- Only use with games you own and have permission to analyze
-- Be aware of anti-cheat systems that may detect memory reading
-- Run as administrator if you encounter permission errors
+1. **Setup Dependencies**: Downloads ImGui automatically
+2. **Build**: Compiles with GCC/G++ and links Windows libraries
+3. **Clean**: Removes unnecessary files for distribution
 
-## 🐛 Troubleshooting
+## Distribution
 
-### Common Issues
+### For End Users
+- **Portable**: Just run `GameAnalyzer.exe`
+- **Installer**: Use `installer.bat` for system installation
+- **Release Package**: Use `create_release.bat` for distribution
 
-1. **Process Not Found**
-   - Make sure the game is running before selecting it
-   - Try running the application as administrator
+### For Developers
+- **Source Code**: Single `main.cpp` file with all functionality
+- **Dependencies**: Automatically downloaded by setup script
+- **Build Scripts**: Simple batch files for compilation
 
-2. **Memory Read Errors**
-   - Verify memory addresses are correct and accessible
-   - Check if the process has memory protection enabled
+## Requirements
 
-3. **Performance Issues**
-   - Reduce update interval or max data points
-   - Close other resource-intensive applications
+- **OS**: Windows 10/11
+- **Architecture**: x64
+- **Permissions**: Run as Administrator for best results
+- **Memory**: ~2-3 MB RAM usage
 
-4. **Build Errors**
-   - Ensure Visual Studio 2022 is installed
-   - Check that CMake is in your PATH
-   - Verify all dependencies are properly cloned
+## License
 
-### Getting Memory Addresses
+MIT License - see LICENSE file for details.
 
-Memory addresses can be found using:
-- **Cheat Engine** - Popular memory scanner
-- **Process Hacker** - System monitoring tool
-- **x64dbg** - Debugger with memory view
-- **Other memory analysis tools**
+## Contributing
 
-## 📊 Performance Comparison
+1. Fork the repository
+2. Make your changes
+3. Test with `build_final.bat`
+4. Submit a pull request
 
-| Feature | Electron Version | C++ Version | Improvement |
-|---------|------------------|-------------|-------------|
-| Memory Usage | 150MB | 8MB | **18x less** |
-| CPU Usage | 5-8% | 1-2% | **4x less** |
-| Startup Time | 3-5s | <1s | **5x faster** |
-| Memory Read | 10-50ms | <1ms | **50x faster** |
-| Binary Size | 200MB+ | 5MB | **40x smaller** |
+## Troubleshooting
 
-## 🤝 Contributing
+### "g++ not found"
+- Install GCC/G++ compiler (Cygwin, MinGW, or Visual Studio)
+- Make sure it's in your PATH
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+### "ImGui not found"
+- Run `setup_dependencies.bat` first
+- Check internet connection for downloading dependencies
 
-### Development Setup
-1. Clone the repository
-2. Install Visual Studio 2022
-3. Install CMake
-4. Clone external dependencies
-5. Build and test
+### "Access Denied" when reading memory
+- Run as Administrator
+- Some processes may be protected by Windows security
 
-## 📄 License
-
-MIT License - Feel free to modify and distribute as needed.
-
-## ⚠️ Disclaimer
-
-This tool is for educational and analysis purposes only. Users are responsible for complying with game terms of service and applicable laws. The developers are not responsible for any misuse of this software.
-
-## 🆘 Support
-
-If you encounter any issues:
-1. Check the troubleshooting section
-2. Search existing issues on GitHub
-3. Create a new issue with detailed information
-4. Include system specifications and error messages
-
----
-
-**Built with ❤️ using C++ for maximum performance and minimal resource usage.**
+### Process not showing in list
+- Click "Refresh Processes"
+- Check "Show System Processes" if needed
+- Use search bar to find specific applications
