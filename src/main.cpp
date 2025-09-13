@@ -117,8 +117,11 @@ public:
         for (const auto& region : regions) {
             if (addresses.size() >= maxAddresses) break;
             
-            // Sample addresses within the region
-            size_t step = std::max(region.size / 50, (size_t)4); // Sample every 4 bytes or region size / 50
+            // Focus on larger regions that are more likely to contain game data
+            if (region.size < 4096) continue; // Skip small regions
+            
+            // Sample addresses within the region more densely
+            size_t step = std::max(region.size / 100, (size_t)4); // Sample every 4 bytes or region size / 100
             for (uintptr_t addr = region.baseAddress; 
                  addr < region.baseAddress + region.size && addresses.size() < maxAddresses; 
                  addr += step) {
@@ -128,7 +131,56 @@ public:
                 SIZE_T bytesRead;
                 if (ReadProcessMemory(hProcess, (LPCVOID)addr, &testValue, sizeof(testValue), &bytesRead) &&
                     bytesRead == sizeof(testValue)) {
-                    addresses.push_back(addr);
+                    
+                    // Prefer addresses with non-zero values that look like game data
+                    if (testValue != 0 && testValue != -1 && 
+                        testValue >= -1000000 && testValue <= 1000000) {
+                        addresses.push_back(addr);
+                    }
+                }
+            }
+        }
+        
+        CloseHandle(hProcess);
+        return addresses;
+    }
+    
+    static std::vector<uintptr_t> findGameDataAddresses(DWORD pid, const std::vector<MemoryRegion>& regions, int maxAddresses = 200) {
+        std::vector<uintptr_t> addresses;
+        
+        HANDLE hProcess = OpenProcess(PROCESS_VM_READ, FALSE, pid);
+        if (!hProcess) {
+            return addresses;
+        }
+        
+        // Focus on regions that are more likely to contain game data
+        for (const auto& region : regions) {
+            if (addresses.size() >= maxAddresses) break;
+            
+            // Skip very small regions and system regions
+            if (region.size < 8192) continue;
+            
+            // Prefer regions with read/write access (more likely to be game data)
+            if (!(region.protection & PAGE_READWRITE)) continue;
+            
+            // Sample more densely in promising regions
+            size_t step = std::max(region.size / 200, (size_t)4);
+            for (uintptr_t addr = region.baseAddress; 
+                 addr < region.baseAddress + region.size && addresses.size() < maxAddresses; 
+                 addr += step) {
+                
+                // Try to read a 4-byte value at this address
+                int32_t testValue;
+                SIZE_T bytesRead;
+                if (ReadProcessMemory(hProcess, (LPCVOID)addr, &testValue, sizeof(testValue), &bytesRead) &&
+                    bytesRead == sizeof(testValue)) {
+                    
+                    // Look for values that could be game data
+                    if (testValue != 0 && testValue != -1 && 
+                        testValue >= -10000 && testValue <= 10000 &&
+                        (testValue % 4 == 0 || testValue % 8 == 0)) { // Often aligned values
+                        addresses.push_back(addr);
+                    }
                 }
             }
         }
@@ -168,14 +220,11 @@ class RealGameAnalyzerGUI {
 private:
     HWND hwnd;
     HWND hListBox;
-    HWND hAddButton;
     HWND hStartButton;
     HWND hExportButton;
     HWND hRefreshButton;
     HWND hStatusLabel;
     HWND hMemList;
-    HWND hAddressEdit;
-    HWND hNameEdit;
     HWND hSearchEdit;
     HWND hScanButton;
     HWND hAddressListBox;
@@ -185,6 +234,8 @@ private:
     HWND hValueChangeButton;
     HWND hLoadGameProfileButton;
     HWND hSaveGameProfileButton;
+    HWND hScanGameDataButton;
+    HWND hAddressSearchEdit;
     
     std::vector<ProcessInfo> processes;
     std::vector<ProcessInfo*> filteredProcesses;
@@ -192,6 +243,7 @@ private:
     std::vector<MemoryRegion> memoryRegions;
     std::vector<uintptr_t> discoveredAddresses;
     std::map<uintptr_t, int32_t> previousValues;
+    std::vector<bool> addressChecked;
     std::atomic<bool> monitoring;
     std::atomic<bool> scanning;
     ProcessInfo* selectedProcess;
@@ -232,7 +284,7 @@ public:
             "Game Analyzer - Real Process Monitor",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT,
-            1200, 800,
+            1400, 900,
             nullptr, nullptr,
             GetModuleHandle(nullptr),
             this
@@ -255,99 +307,87 @@ public:
             20, 20, 120, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hListBox = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-            20, 50, 300, 200, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
+            20, 50, 350, 200, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
         
         hRefreshButton = CreateWindow("BUTTON", "Refresh Processes", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            330, 50, 120, 25, hwnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
+            390, 50, 140, 25, hwnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
         
         CreateWindow("BUTTON", "Show System Processes", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            330, 80, 150, 25, hwnd, (HMENU)5, GetModuleHandle(nullptr), nullptr);
+            390, 80, 160, 25, hwnd, (HMENU)5, GetModuleHandle(nullptr), nullptr);
         
         CreateWindow("BUTTON", "Select Highlighted Process", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            330, 110, 150, 25, hwnd, (HMENU)9, GetModuleHandle(nullptr), nullptr);
+            390, 110, 160, 25, hwnd, (HMENU)9, GetModuleHandle(nullptr), nullptr);
         
         // Search functionality
         CreateWindow("STATIC", "Search:", WS_VISIBLE | WS_CHILD,
             20, 260, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hSearchEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
-            70, 260, 200, 25, hwnd, (HMENU)6, GetModuleHandle(nullptr), nullptr);
+            70, 260, 250, 25, hwnd, (HMENU)6, GetModuleHandle(nullptr), nullptr);
         
         // Populate process list
         refreshProcessList();
         
-        // Memory Address Input
-        CreateWindow("STATIC", "Add Memory Address:", WS_VISIBLE | WS_CHILD,
-            20, 295, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        CreateWindow("STATIC", "Address (hex):", WS_VISIBLE | WS_CHILD,
-            20, 325, 100, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        hAddressEdit = CreateWindow("EDIT", "0x", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
-            20, 350, 150, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        CreateWindow("STATIC", "Name:", WS_VISIBLE | WS_CHILD,
-            180, 325, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        hNameEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
-            180, 350, 100, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        // Buttons
-        hAddButton = CreateWindow("BUTTON", "Add Address", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            20, 385, 100, 30, hwnd, (HMENU)1, GetModuleHandle(nullptr), nullptr);
-        
+        // Main Control Buttons
         hStartButton = CreateWindow("BUTTON", "Start Monitoring", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            130, 385, 120, 30, hwnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
+             20, 295, 130, 30, hwnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
         
         hExportButton = CreateWindow("BUTTON", "Export Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            260, 385, 100, 30, hwnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
+             160, 295, 120, 30, hwnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
         
         // Status Label
         hStatusLabel = CreateWindow("STATIC", "Ready - Select a process to begin", WS_VISIBLE | WS_CHILD,
-            20, 425, 500, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+             20, 335, 600, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         // Memory Scanning Section
         CreateWindow("STATIC", "Memory Scanning:", WS_VISIBLE | WS_CHILD,
-            20, 455, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            20, 365, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hScanButton = CreateWindow("BUTTON", "Scan Process Memory", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            20, 480, 150, 30, hwnd, (HMENU)7, GetModuleHandle(nullptr), nullptr);
+            20, 390, 160, 30, hwnd, (HMENU)7, GetModuleHandle(nullptr), nullptr);
+        
+        hScanGameDataButton = CreateWindow("BUTTON", "Scan Game Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            190, 390, 160, 30, hwnd, (HMENU)14, GetModuleHandle(nullptr), nullptr);
         
         hProgressBar = CreateWindow(PROGRESS_CLASS, "", WS_VISIBLE | WS_CHILD | PBS_SMOOTH,
-            180, 485, 200, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            20, 430, 400, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         CreateWindow("STATIC", "Discovered Addresses:", WS_VISIBLE | WS_CHILD,
-            20, 520, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            20, 460, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        CreateWindow("STATIC", "Search:", WS_VISIBLE | WS_CHILD,
+            20, 485, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hAddressSearchEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+            70, 485, 200, 25, hwnd, (HMENU)15, GetModuleHandle(nullptr), nullptr);
         
         hAddressListBox = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_EXTENDEDSEL,
-            20, 545, 350, 120, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            20, 515, 450, 150, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
+        // Button layout in two columns
         hAddSelectedButton = CreateWindow("BUTTON", "Add Selected to Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            380, 545, 150, 30, hwnd, (HMENU)8, GetModuleHandle(nullptr), nullptr);
+            480, 515, 180, 30, hwnd, (HMENU)8, GetModuleHandle(nullptr), nullptr);
         
         hCompareButton = CreateWindow("BUTTON", "Compare Values", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            380, 580, 150, 30, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
+            480, 550, 180, 30, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
         
-        hValueChangeButton = CreateWindow("BUTTON", "Show Changed Values", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            380, 615, 150, 30, hwnd, (HMENU)11, GetModuleHandle(nullptr), nullptr);
+        hValueChangeButton = CreateWindow("BUTTON", "Add Changed to Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+             480, 585, 180, 30, hwnd, (HMENU)11, GetModuleHandle(nullptr), nullptr);
         
         hLoadGameProfileButton = CreateWindow("BUTTON", "Load Game Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            540, 545, 120, 30, hwnd, (HMENU)12, GetModuleHandle(nullptr), nullptr);
+            480, 620, 180, 30, hwnd, (HMENU)12, GetModuleHandle(nullptr), nullptr);
         
         hSaveGameProfileButton = CreateWindow("BUTTON", "Save Game Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            540, 580, 120, 30, hwnd, (HMENU)13, GetModuleHandle(nullptr), nullptr);
+            480, 655, 180, 30, hwnd, (HMENU)13, GetModuleHandle(nullptr), nullptr);
         
         // Memory Addresses List
         CreateWindow("STATIC", "Monitored Addresses:", WS_VISIBLE | WS_CHILD,
             20, 675, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hMemList = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL,
-            20, 705, 500, 80, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            20, 700, 640, 120, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        // Add some sample memory addresses
-        addMemoryAddress("0x12345678", "Health");
-        addMemoryAddress("0x87654321", "Ammo");
-        addMemoryAddress("0xABCDEF00", "Score");
+        // No sample addresses - start with empty list
     }
     
     bool isUserApplication(const std::string& processName) {
@@ -481,9 +521,6 @@ public:
     
     void onButtonClick(int buttonId) {
         switch (buttonId) {
-            case 1: // Add Memory Address
-                addMemoryAddressFromInput();
-                break;
             case 2: // Start/Stop Monitoring
                 toggleMonitoring();
                 break;
@@ -518,7 +555,7 @@ public:
             case 10: // Compare Values
                 compareValues();
                 break;
-            case 11: // Show Changed Values
+            case 11: // Add Changed to Monitor
                 showChangedValues();
                 break;
             case 12: // Load Game Profile
@@ -526,6 +563,9 @@ public:
                 break;
             case 13: // Save Game Profile
                 saveGameProfile();
+                break;
+            case 14: // Scan Game Data
+                scanGameData();
                 break;
         }
     }
@@ -546,20 +586,6 @@ public:
         }
     }
     
-    void addMemoryAddressFromInput() {
-        char address[256], name[256];
-        GetWindowText(hAddressEdit, address, sizeof(address));
-        GetWindowText(hNameEdit, name, sizeof(name));
-        
-        if (strlen(address) > 2 && strlen(name) > 0) {
-            addMemoryAddress(address, name);
-            SetWindowText(hAddressEdit, "0x");
-            SetWindowText(hNameEdit, "");
-            SetWindowText(hStatusLabel, "Memory address added successfully");
-        } else {
-            SetWindowText(hStatusLabel, "Please enter both address and name");
-        }
-    }
     
     void toggleMonitoring() {
         if (!selectedProcess) {
@@ -655,6 +681,7 @@ public:
         // Clear previous results
         SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
         discoveredAddresses.clear();
+        addressChecked.clear();
         
         // Start scanning in a separate thread
         std::thread([this]() {
@@ -675,19 +702,11 @@ public:
                 // Step 2: Find readable addresses
                 discoveredAddresses = MemoryScanner::findReadableAddresses(selectedProcess->pid, memoryRegions, 200);
                 
-                // Step 3: Populate the address list
-                for (size_t i = 0; i < discoveredAddresses.size(); ++i) {
-                    uintptr_t addr = discoveredAddresses[i];
-                    std::string addrStr = MemoryScanner::addressToString(addr);
-                    
-                    // Try to read the value at this address
-                    int32_t value = 0;
-                    if (MemoryReader::readMemory(selectedProcess->pid, addr, &value, sizeof(value))) {
-                        std::string interpretation = MemoryScanner::interpretValue(value);
-                        std::string display = addrStr + " (Value: " + std::to_string(value) + ")" + interpretation;
-                        SendMessage(hAddressListBox, LB_ADDSTRING, 0, (LPARAM)display.c_str());
-                    }
-                }
+                // Initialize checkbox state
+                addressChecked.resize(discoveredAddresses.size(), false);
+                
+                // Step 3: Populate the address list using filter method
+                filterAddressList();
                 
                 sprintf(status, "Scan complete! Found %zu readable addresses", discoveredAddresses.size());
                 SetWindowText(hStatusLabel, status);
@@ -703,26 +722,70 @@ public:
         }).detach();
     }
     
+    void filterAddressList() {
+        // Get search text
+        char searchText[256];
+        GetWindowText(hAddressSearchEdit, searchText, sizeof(searchText));
+        std::string search = searchText;
+        
+        // Clear and repopulate the list with filtered results
+        SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
+        
+        for (size_t i = 0; i < discoveredAddresses.size(); ++i) {
+            uintptr_t addr = discoveredAddresses[i];
+            std::string addrStr = MemoryScanner::addressToString(addr);
+            
+            // Try to read the value at this address
+            int32_t value = 0;
+            if (MemoryReader::readMemory(selectedProcess->pid, addr, &value, sizeof(value))) {
+                std::string interpretation = MemoryScanner::interpretValue(value);
+                std::string display = addrStr + " (Value: " + std::to_string(value) + ")" + interpretation;
+                
+                // Add checkbox to display
+                std::string checkboxDisplay = (addressChecked.size() > i && addressChecked[i]) ? "[✓] " : "[ ] ";
+                checkboxDisplay += display;
+                
+                // Filter based on search text (case-insensitive)
+                if (search.empty()) {
+                    SendMessage(hAddressListBox, LB_ADDSTRING, 0, (LPARAM)checkboxDisplay.c_str());
+                } else {
+                    // Convert both strings to lowercase for case-insensitive search
+                    // Search in the full checkboxDisplay text (includes checkbox and *** markers)
+                    std::string checkboxDisplayLower = checkboxDisplay;
+                    std::string searchLower = search;
+                    std::transform(checkboxDisplayLower.begin(), checkboxDisplayLower.end(), checkboxDisplayLower.begin(), ::tolower);
+                    std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(), ::tolower);
+                    
+                    if (checkboxDisplayLower.find(searchLower) != std::string::npos) {
+                        SendMessage(hAddressListBox, LB_ADDSTRING, 0, (LPARAM)checkboxDisplay.c_str());
+                    }
+                }
+            }
+        }
+    }
+    
+    void toggleAddressCheckbox() {
+        int sel = SendMessage(hAddressListBox, LB_GETCURSEL, 0, 0);
+        if (sel != LB_ERR && sel < (int)discoveredAddresses.size()) {
+            // Toggle the checkbox state
+            if (sel < (int)addressChecked.size()) {
+                addressChecked[sel] = !addressChecked[sel];
+                // Refresh the display
+                filterAddressList();
+            }
+        }
+    }
+    
     void addSelectedAddresses() {
         if (!selectedProcess) {
             SetWindowText(hStatusLabel, "Please select a process first");
             return;
         }
         
-        int selCount = SendMessage(hAddressListBox, LB_GETSELCOUNT, 0, 0);
-        if (selCount <= 0) {
-            SetWindowText(hStatusLabel, "Please select addresses to add");
-            return;
-        }
-        
-        std::vector<int> selectedIndices(selCount);
-        SendMessage(hAddressListBox, LB_GETSELITEMS, selCount, (LPARAM)selectedIndices.data());
-        
         int addedCount = 0;
-        for (int i = 0; i < selCount; ++i) {
-            int index = selectedIndices[i];
-            if (index >= 0 && index < (int)discoveredAddresses.size()) {
-                uintptr_t addr = discoveredAddresses[index];
+        for (size_t i = 0; i < discoveredAddresses.size(); ++i) {
+            if (i < addressChecked.size() && addressChecked[i]) {
+                uintptr_t addr = discoveredAddresses[i];
                 std::string addrStr = MemoryScanner::addressToString(addr);
                 std::string name = "Discovered_" + std::to_string(addedCount + 1);
                 
@@ -742,9 +805,13 @@ public:
             }
         }
         
-        char status[100];
-        sprintf(status, "Added %d new addresses to monitoring list", addedCount);
-        SetWindowText(hStatusLabel, status);
+        if (addedCount == 0) {
+            SetWindowText(hStatusLabel, "No checked addresses to add. Click on [ ] to check addresses.");
+        } else {
+            char status[100];
+            sprintf(status, "Added %d new addresses to monitoring list", addedCount);
+            SetWindowText(hStatusLabel, status);
+        }
     }
     
     void compareValues() {
@@ -784,8 +851,7 @@ public:
             return;
         }
         
-        // Clear and repopulate the address list with changed values highlighted
-        SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
+        SetWindowText(hStatusLabel, "Checking for changed values and adding to monitoring...");
         
         int changedCount = 0;
         for (uintptr_t addr : discoveredAddresses) {
@@ -795,25 +861,35 @@ public:
                 if (it != previousValues.end()) {
                     int32_t previousValue = it->second;
                     
-                    std::string addrStr = MemoryScanner::addressToString(addr);
-                    std::string interpretation = MemoryScanner::interpretValue(currentValue);
-                    
-                    std::string display;
                     if (currentValue != previousValue) {
-                        display = "*** " + addrStr + " (Changed: " + std::to_string(previousValue) + 
-                                " -> " + std::to_string(currentValue) + ")" + interpretation + " ***";
-                        changedCount++;
-                    } else {
-                        display = addrStr + " (Value: " + std::to_string(currentValue) + ")" + interpretation;
+                        // Address value changed - add it to monitoring
+                        std::string addrStr = MemoryScanner::addressToString(addr);
+                        std::string name = "Changed_" + std::to_string(changedCount + 1);
+                        
+                        // Check if address already exists in monitoring
+                        bool exists = false;
+                        for (const auto& memAddr : memoryAddresses) {
+                            if (memAddr.second == addr) {
+                                exists = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!exists) {
+                            addMemoryAddress(addrStr, name);
+                            changedCount++;
+                        }
                     }
-                    
-                    SendMessage(hAddressListBox, LB_ADDSTRING, 0, (LPARAM)display.c_str());
                 }
             }
         }
         
         char status[200];
-        sprintf(status, "Found %d changed values! Look for addresses marked with ***", changedCount);
+        if (changedCount > 0) {
+            sprintf(status, "Found %d changed values! Added them to monitoring list.", changedCount);
+        } else {
+            sprintf(status, "No changed values found. Try doing something different in-game.");
+        }
         SetWindowText(hStatusLabel, status);
     }
     
@@ -901,6 +977,66 @@ public:
         }
     }
     
+    void scanGameData() {
+        if (!selectedProcess) {
+            SetWindowText(hStatusLabel, "Please select a process first");
+            return;
+        }
+        
+        if (scanning) {
+            SetWindowText(hStatusLabel, "Memory scan already in progress...");
+            return;
+        }
+        
+        scanning = true;
+        SetWindowText(hScanGameDataButton, "Scanning...");
+        EnableWindow(hScanGameDataButton, FALSE);
+        SetWindowText(hStatusLabel, "Scanning for game data (focused scan)...");
+        
+        // Clear previous results
+        SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
+        discoveredAddresses.clear();
+        addressChecked.clear();
+        
+        // Start scanning in a separate thread
+        std::thread([this]() {
+            try {
+                // Step 1: Get memory regions
+                SetWindowText(hStatusLabel, "Discovering memory regions...");
+                memoryRegions = MemoryScanner::scanProcessMemory(selectedProcess->pid);
+                
+                if (memoryRegions.empty()) {
+                    SetWindowText(hStatusLabel, "No readable memory regions found");
+                    goto cleanup;
+                }
+                
+                char status[200];
+                sprintf(status, "Found %zu memory regions, scanning for game data...", memoryRegions.size());
+                SetWindowText(hStatusLabel, status);
+                
+                // Step 2: Find game data addresses (more focused scan)
+                discoveredAddresses = MemoryScanner::findGameDataAddresses(selectedProcess->pid, memoryRegions, 200);
+                
+                // Initialize checkbox state
+                addressChecked.resize(discoveredAddresses.size(), false);
+                
+                // Step 3: Populate the address list using filter method
+                filterAddressList();
+                
+                sprintf(status, "Game data scan complete! Found %zu addresses. Try Compare Values now!", discoveredAddresses.size());
+                SetWindowText(hStatusLabel, status);
+                
+            } catch (const std::exception& e) {
+                SetWindowText(hStatusLabel, "Error during game data scan");
+            }
+            
+        cleanup:
+            scanning = false;
+            SetWindowText(hScanGameDataButton, "Scan Game Data");
+            EnableWindow(hScanGameDataButton, TRUE);
+        }).detach();
+    }
+    
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         RealGameAnalyzerGUI* pThis = nullptr;
         
@@ -922,9 +1058,15 @@ public:
                     } else if (HIWORD(wParam) == LBN_DBLCLK && LOWORD(wParam) == 10) {
                         // Double-click on process list
                         pThis->onProcessSelection();
+                    } else if (HIWORD(wParam) == LBN_SELCHANGE && LOWORD(wParam) == 0) {
+                        // Click on address list - toggle checkbox
+                        pThis->toggleAddressCheckbox();
                     } else if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 6) {
                         // Search text changed
                         pThis->refreshProcessList();
+                    } else if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 15) {
+                        // Address search text changed
+                        pThis->filterAddressList();
                     }
                     break;
                 case WM_DESTROY:
