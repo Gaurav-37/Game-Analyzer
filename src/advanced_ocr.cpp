@@ -2,6 +2,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 #include <iostream>
+#include <filesystem>
 #include <algorithm>
 #include <regex>
 
@@ -33,18 +34,52 @@ bool AdvancedOCR::initializeTesseract() {
     try {
         tesseractAPI = std::make_unique<tesseract::TessBaseAPI>();
         
-        // Initialize Tesseract with English language
-        if (tesseractAPI->Init(nullptr, "eng")) {
-            std::cerr << "Failed to initialize Tesseract" << std::endl;
+        // Search for tessdata in multiple locations
+        std::vector<std::filesystem::path> tessdataPaths = {
+            std::filesystem::current_path() / "tessdata",
+            std::filesystem::path(std::getenv("PROGRAMFILES")) / "Tesseract-OCR" / "tessdata",
+            std::filesystem::path("C:/msys64/mingw64/share/tessdata"),
+            std::filesystem::path(std::getenv("LOCALAPPDATA")) / "Tesseract" / "tessdata",
+            std::filesystem::path(std::getenv("APPDATA")) / "Tesseract" / "tessdata"
+        };
+        
+        // Also check environment variable
+        if (const char* tessdataPrefix = std::getenv("TESSDATA_PREFIX")) {
+            tessdataPaths.insert(tessdataPaths.begin(), 
+                std::filesystem::path(tessdataPrefix));
+        }
+        
+        bool initialized = false;
+        for (const auto& path : tessdataPaths) {
+            if (std::filesystem::exists(path / "eng.traineddata")) {
+                std::string pathStr = path.string();
+                if (tesseractAPI->Init(pathStr.c_str(), "eng") == 0) {
+                    // Configure for game text
+                    tesseractAPI->SetPageSegMode(tesseract::PSM_SPARSE_TEXT);
+                    tesseractAPI->SetVariable("tessedit_char_whitelist",
+                        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:/ ");
+                    tesseractAPI->SetVariable("preserve_interword_spaces", "1");
+                    
+                    this->initialized = true;
+                    loadDefaultGameTemplates();
+                    initialized = true;
+                    break;
+                }
+            }
+        }
+        
+        if (!initialized) {
+            std::cerr << "Tessdata not found. Please download from: "
+                      << "https://github.com/tesseract-ocr/tessdata" << std::endl;
+            std::cerr << "Searched paths:" << std::endl;
+            for (const auto& path : tessdataPaths) {
+                std::cerr << "  " << path << std::endl;
+            }
             return false;
         }
         
-        // Set OCR mode to single text block
-        tesseractAPI->SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
-        
-        initialized = true;
-        loadDefaultGameTemplates();
         return true;
+        
     } catch (const std::exception& e) {
         std::cerr << "Tesseract initialization error: " << e.what() << std::endl;
         return false;

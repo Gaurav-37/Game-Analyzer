@@ -1,4 +1,5 @@
 #include "game_analytics.h"
+#include "cuda_support.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -12,8 +13,16 @@
 GameEventDetector::GameEventDetector() 
     : totalEventsDetected(0), falsePositives(0), averageDetectionTime(0.0), isDetecting(false) {
     
-    // Initialize optical flow (CPU fallback)
-    opticalFlow = cv::FarnebackOpticalFlow::create();
+    // Initialize CUDA support
+    useCuda = CudaSupport::isAvailable();
+    
+    // Initialize optical flow with CUDA detection
+    if (useCuda) {
+        // CUDA optical flow would be initialized here if available
+        opticalFlow = cv::FarnebackOpticalFlow::create(); // CPU fallback for now
+    } else {
+        opticalFlow = cv::FarnebackOpticalFlow::create();
+    }
     
     // Initialize game colors
     gameColors["red"] = cv::Scalar(0, 0, 255);

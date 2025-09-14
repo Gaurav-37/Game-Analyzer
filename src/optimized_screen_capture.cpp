@@ -644,13 +644,30 @@ void OptimizedScreenCapture::handleDirectXError(HRESULT hr, const std::string& o
 }
 
 bool OptimizedScreenCapture::isDirectXDeviceLost() {
-    // Check if DirectX device is lost
-    return false; // Simplified implementation
+    if (!d3dDevice) return true;
+    
+    // Check device status
+    HRESULT hr = d3dDevice->GetDeviceRemovedReason();
+    return FAILED(hr) && (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET);
 }
 
 bool OptimizedScreenCapture::recoverDirectXDevice() {
-    // Attempt to recover from device loss
-    return false; // Simplified implementation
+    if (!isDirectXDeviceLost()) return true;
+    
+    // Clean up current resources
+    cleanup();
+    
+    // Reinitialize DirectX
+    if (!initializeDirectX()) {
+        return false;
+    }
+    
+    // Reinitialize GPU sharing if needed
+    if (useGPUAcceleration && !initializeGPUSharing()) {
+        useGPUAcceleration = false;
+    }
+    
+    return true;
 }
 
 // IntelligentRegionProcessor Implementation
@@ -676,27 +693,122 @@ IntelligentRegionProcessor::GameState IntelligentRegionProcessor::detectGameStat
 }
 
 bool IntelligentRegionProcessor::isMenuState(const cv::Mat& frame) {
-    // Detect menu state by looking for UI elements
-    // This is a simplified implementation
-    return false;
+    if (frame.empty()) return false;
+    
+    // Convert to grayscale for analysis
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+    
+    // Look for common menu patterns
+    cv::Mat edges;
+    cv::Canny(gray, edges, 50, 150);
+    
+    // Detect horizontal lines (common in menus)
+    std::vector<cv::Vec4i> lines;
+    cv::HoughLinesP(edges, lines, 1, CV_PI/180, 50, 50, 10);
+    
+    int horizontalLines = 0;
+    for (const auto& line : lines) {
+        if (abs(line[1] - line[3]) < 5) { // Nearly horizontal
+            horizontalLines++;
+        }
+    }
+    
+    // Menu typically has many horizontal UI elements
+    return horizontalLines > 10;
 }
 
 bool IntelligentRegionProcessor::isLoadingState(const cv::Mat& frame) {
-    // Detect loading state by looking for loading indicators
-    // This is a simplified implementation
-    return false;
+    if (frame.empty()) return false;
+    
+    // Look for loading indicators (spinning circles, progress bars)
+    cv::Mat gray;
+    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+    
+    // Detect circular patterns (loading spinners)
+    std::vector<cv::Vec3f> circles;
+    cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT, 1, 20, 50, 30, 10, 100);
+    
+    // Look for progress bars (rectangular patterns)
+    cv::Mat edges;
+    cv::Canny(gray, edges, 50, 150);
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(edges, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    
+    int progressBarCandidates = 0;
+    for (const auto& contour : contours) {
+        cv::Rect boundingRect = cv::boundingRect(contour);
+        double aspectRatio = static_cast<double>(boundingRect.width) / boundingRect.height;
+        
+        // Progress bars are typically wide rectangles
+        if (aspectRatio > 3.0 && boundingRect.height < 50) {
+            progressBarCandidates++;
+        }
+    }
+    
+    return !circles.empty() || progressBarCandidates > 0;
 }
 
 bool IntelligentRegionProcessor::isGameplayState(const cv::Mat& frame) {
-    // Detect gameplay state by looking for game UI elements
-    // This is a simplified implementation
-    return true; // Default to gameplay
+    if (frame.empty()) return false;
+    
+    // Gameplay typically has:
+    // 1. Dynamic content (not static like menus)
+    // 2. More varied colors and contrast
+    // 3. Less structured UI elements
+    
+    // Check for high contrast and color variation
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(frame, mean, stddev);
+    
+    // Gameplay has higher contrast than menus/cutscenes
+    bool highContrast = stddev[0] > 50;
+    
+    // Check for dynamic content by looking at color distribution
+    cv::Mat hist;
+    int histSize = 256;
+    float range[] = {0, 256};
+    const float* histRange = {range};
+    cv::calcHist(&frame, 1, nullptr, cv::Mat(), hist, 1, &histSize, &histRange);
+    
+    // Gameplay has more varied color distribution
+    cv::Scalar histMean, histStddev;
+    cv::meanStdDev(hist, histMean, histStddev);
+    bool variedColors = histStddev[0] > 1000;
+    
+    return highContrast && variedColors;
 }
 
 bool IntelligentRegionProcessor::isCutsceneState(const cv::Mat& frame) {
-    // Detect cutscene state by looking for cinematic elements
-    // This is a simplified implementation
-    return false;
+    if (frame.empty()) return false;
+    
+    // Cutscenes typically have:
+    // 1. Dark borders (letterboxing)
+    // 2. Lower contrast
+    // 3. Fewer UI elements
+    
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(frame, mean, stddev);
+    
+    // Check for letterboxing (dark top/bottom borders)
+    int height = frame.rows;
+    int width = frame.cols;
+    
+    cv::Rect topRegion(0, 0, width, height/8);
+    cv::Rect bottomRegion(0, height*7/8, width, height/8);
+    
+    cv::Scalar topMean, bottomMean;
+    cv::meanStdDev(frame(topRegion), topMean, stddev);
+    cv::meanStdDev(frame(bottomRegion), bottomMean, stddev);
+    
+    // Dark borders indicate letterboxing
+    bool hasLetterboxing = (topMean[0] < 30 && bottomMean[0] < 30);
+    
+    // Lower overall contrast
+    double contrast = stddev[0];
+    bool lowContrast = contrast < 40;
+    
+    return hasLetterboxing || lowContrast;
 }
 
 void IntelligentRegionProcessor::addRegion(const ProcessingRegion& region) {

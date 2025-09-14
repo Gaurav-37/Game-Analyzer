@@ -66,6 +66,9 @@ private:
     std::vector<GameEvent> detectedEvents;
     std::map<EventType, std::vector<VisualCue>> eventCues;
     
+    // CUDA support
+    bool useCuda;
+    
     // Optical flow for screen shake detection (CPU fallback)
     cv::Mat prevFrame;
     cv::Mat currentFrame;
