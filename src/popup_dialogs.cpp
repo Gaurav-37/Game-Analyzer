@@ -2,33 +2,38 @@
 #include "main.h" // For RealGameAnalyzerGUI class
 #include <vector>
 #include <sstream>
+#include <memory>
 
 // Main dialog functions
 void PopupDialogs::showAboutDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatAboutContent();
-    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "About Game Analyzer", content, 600, 500);
+    auto dialog = std::make_unique<ModernDialog>(parent->hwnd, parent, "About Game Analyzer", content, 600, 500);
     // Dialog will use parent's theme state
     dialog->show();
+    // Dialog will be automatically destroyed when it goes out of scope
 }
 
 void PopupDialogs::showSettingsDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatSettingsContent(parent);
-    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "Settings", content, 450, 300);
+    auto dialog = std::make_unique<ModernDialog>(parent->hwnd, parent, "Settings", content, 450, 300);
     // Dialog will use parent's theme state
     dialog->show();
+    // Dialog will be automatically destroyed when it goes out of scope
 }
 
 void PopupDialogs::showHelpDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatHelpContent();
-    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "Help & Guide", content, 700, 600);
+    auto dialog = std::make_unique<ModernDialog>(parent->hwnd, parent, "Help & Guide", content, 700, 600);
     // Dialog will use parent's theme state
     dialog->show();
+    // Dialog will be automatically destroyed when it goes out of scope
 }
 
 void PopupDialogs::showErrorDialog(RealGameAnalyzerGUI* parent, const std::string& title, const std::string& message) {
-    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, title, message, 400, 200);
+    auto dialog = std::make_unique<ModernDialog>(parent->hwnd, parent, title, message, 400, 200);
     dialog->show();
     parent->setStatus("Error: %s", message.c_str());
+    // Dialog will be automatically destroyed when it goes out of scope
 }
 
 void PopupDialogs::showWarningDialog(RealGameAnalyzerGUI* parent, const std::string& title, const std::string& message) {

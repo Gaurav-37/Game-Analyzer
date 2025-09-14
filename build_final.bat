@@ -20,8 +20,15 @@ if %errorlevel% neq 0 (
 
 echo [1/4] Checking dependencies...
 
-echo [2/4] Building final Game Analyzer...
-g++ -std=c++17 -O2 -mwindows src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp -o GameAnalyzer.exe -lgdi32 -luser32 -lkernel32 -lpsapi -lcomctl32 -ld3d11 -ldxgi -lole32 -ldwmapi -lmsimg32
+echo [2/4] Building final Game Analyzer with advanced optimizations...
+g++ -std=c++17 -O3 -march=native -fopenmp -flto -ffast-math -mwindows ^
+    src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp src/advanced_ocr.cpp ^
+    src/optimized_screen_capture.cpp src/game_analytics.cpp src/thread_manager.cpp ^
+    -o GameAnalyzer.exe ^
+    -lgdi32 -luser32 -lkernel32 -lpsapi -lcomctl32 -ld3d11 -ldxgi -lole32 -ldwmapi -lmsimg32 ^
+    -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_highgui -lopencv_cuda ^
+    -lopencv_cudaimgproc -lopencv_cudaobjdetect -lopencv_cudafeatures2d ^
+    -ltesseract -llept -lws2_32 -lwinmm -loleaut32 -luuid -lcomdlg32 -ladvapi32
 
 if %errorlevel% neq 0 (
     echo [2/4] Build failed!
