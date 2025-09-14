@@ -1,0 +1,16 @@
+# Game: Valorant
+# Version: Latest
+# Last Updated: 2025-01-14
+# Description: Tactical FPS game - health, shield, abilities, credits
+
+Health=0x23456789
+Shield=0x2345678D
+Credits=0x23456791
+Primary_Ammo=0x23456795
+Secondary_Ammo=0x23456799
+Ability_Q=0x2345679D
+Ability_E=0x234567A1
+Ability_C=0x234567A5
+Ultimate=0x234567A9
+Score=0x234567AD
+

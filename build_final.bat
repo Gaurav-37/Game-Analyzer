@@ -19,14 +19,9 @@ if %errorlevel% neq 0 (
 )
 
 echo [1/4] Checking dependencies...
-if not exist "external\imgui\imgui.cpp" (
-    echo ERROR: ImGui not found! Please run setup_dependencies.bat first.
-    pause
-    exit /b 1
-)
 
 echo [2/4] Building final Game Analyzer...
-g++ -std=c++17 -O2 -mwindows src/main.cpp -o GameAnalyzer.exe -lgdi32 -luser32 -lkernel32 -lpsapi
+g++ -std=c++17 -O2 -mwindows src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp -o GameAnalyzer.exe -lgdi32 -luser32 -lkernel32 -lpsapi -lcomctl32 -ld3d11 -ldxgi -lole32 -ldwmapi
 
 if %errorlevel% neq 0 (
     echo [2/4] Build failed!
@@ -48,19 +43,7 @@ REM Remove old source files
 if exist "src/gui_main.cpp" del "src/gui_main.cpp"
 if exist "src/real_gui_main.cpp" del "src/real_gui_main.cpp"
 
-REM Remove external dependencies (keep only what's needed)
-if exist "external\imgui\imgui_demo.cpp" del "external\imgui\imgui_demo.cpp"
-if exist "external\imgui\imconfig.h" del "external\imgui\imconfig.h"
-if exist "external\imgui\imgui_internal.h" del "external\imgui\imgui_internal.h"
-if exist "external\imgui\imstb_rectpack.h" del "external\imgui\imstb_rectpack.h"
-if exist "external\imgui\imstb_textedit.h" del "external\imgui\imstb_textedit.h"
-if exist "external\imgui\imstb_truetype.h" del "external\imgui\imstb_truetype.h"
-
-REM Remove ImPlot files (not used in final version)
-if exist "external\implot" rmdir /s /q "external\implot"
-
-REM Remove ImGui backends (not used in final version)
-if exist "external\imgui\backends" rmdir /s /q "external\imgui\backends"
+REM External dependencies removed (not needed for final build)
 
 echo [4/4] Final cleanup complete!
 
@@ -78,7 +61,6 @@ if exist "GameAnalyzer.exe" (
     echo Final project structure:
     echo ├── GameAnalyzer.exe          # Your final application
     echo ├── src\main.cpp              # Source code
-    echo ├── external\imgui\           # Minimal ImGui files
     echo ├── build_final.bat           # This build script
     echo ├── create_release.bat        # Release builder
     echo ├── installer.bat             # Installer

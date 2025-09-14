@@ -15,6 +15,14 @@
 #include <iomanip>
 #include <sstream>
 #include <map>
+#include <cstdarg>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wincodec.h>
+#include <dwmapi.h>
+#include "ui_framework.h"
+#include "popup_dialogs.h"
+
 
 // Real process information structure
 struct ProcessInfo {
@@ -61,6 +69,292 @@ struct MemoryRegion {
         else if (protection & PAGE_READONLY) regionType = "Read Only";
         else if (protection & PAGE_NOACCESS) regionType = "No Access";
         else regionType = "Unknown";
+    }
+};
+
+// Screen capture functionality using Windows Graphics Capture API
+class ScreenCapture {
+private:
+    ID3D11Device* d3dDevice;
+    ID3D11DeviceContext* d3dContext;
+    IDXGIOutputDuplication* outputDuplication;
+    DXGI_OUTPUT_DESC outputDesc;
+    bool initialized;
+    
+public:
+    ScreenCapture() : d3dDevice(nullptr), d3dContext(nullptr), outputDuplication(nullptr), initialized(false) {}
+    
+    ~ScreenCapture() {
+        cleanup();
+    }
+    
+    bool initialize() {
+        if (initialized) return true;
+        
+        // Create D3D11 device
+        D3D_FEATURE_LEVEL featureLevel;
+        HRESULT hr = D3D11CreateDevice(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+            nullptr, 0, D3D11_SDK_VERSION,
+            &d3dDevice, &featureLevel, &d3dContext
+        );
+        
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Get DXGI device
+        IDXGIDevice* dxgiDevice;
+        hr = d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Get DXGI adapter
+        IDXGIAdapter* dxgiAdapter;
+        hr = dxgiDevice->GetAdapter(&dxgiAdapter);
+        dxgiDevice->Release();
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Get primary output
+        IDXGIOutput* dxgiOutput;
+        hr = dxgiAdapter->EnumOutputs(0, &dxgiOutput);
+        dxgiAdapter->Release();
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Get output description
+        dxgiOutput->GetDesc(&outputDesc);
+        
+        // Get DXGI Output1 interface for DuplicateOutput
+        IDXGIOutput1* dxgiOutput1;
+        hr = dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
+        dxgiOutput->Release();
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Create output duplication
+        hr = dxgiOutput1->DuplicateOutput(d3dDevice, &outputDuplication);
+        dxgiOutput1->Release();
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        initialized = true;
+        return true;
+    }
+    
+    bool captureFrame(std::vector<uint8_t>& frameData, int& width, int& height) {
+        if (!initialized || !outputDuplication) {
+            return false;
+        }
+        
+        DXGI_OUTDUPL_FRAME_INFO frameInfo;
+        IDXGIResource* desktopResource;
+        
+        // Get next frame
+        HRESULT hr = outputDuplication->AcquireNextFrame(0, &frameInfo, &desktopResource);
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+            return false; // No new frame available
+        }
+        if (FAILED(hr)) {
+            return false;
+        }
+        
+        // Get texture from resource
+        ID3D11Texture2D* desktopTexture;
+        hr = desktopResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&desktopTexture);
+        desktopResource->Release();
+        if (FAILED(hr)) {
+            outputDuplication->ReleaseFrame();
+            return false;
+        }
+        
+        // Get texture description
+        D3D11_TEXTURE2D_DESC desc;
+        desktopTexture->GetDesc(&desc);
+        
+        width = desc.Width;
+        height = desc.Height;
+        
+        // Create staging texture for CPU access
+        D3D11_TEXTURE2D_DESC stagingDesc = desc;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+        stagingDesc.BindFlags = 0;
+        
+        ID3D11Texture2D* stagingTexture;
+        hr = d3dDevice->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
+        if (FAILED(hr)) {
+            desktopTexture->Release();
+            outputDuplication->ReleaseFrame();
+            return false;
+        }
+        
+        // Copy to staging texture
+        d3dContext->CopyResource(stagingTexture, desktopTexture);
+        desktopTexture->Release();
+        
+        // Map and read pixel data
+        D3D11_MAPPED_SUBRESOURCE mappedResource;
+        hr = d3dContext->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mappedResource);
+        if (SUCCEEDED(hr)) {
+            // Calculate frame size (assuming RGBA format)
+            size_t frameSize = width * height * 4;
+            frameData.resize(frameSize);
+            
+            // Copy pixel data
+            uint8_t* src = static_cast<uint8_t*>(mappedResource.pData);
+            uint8_t* dst = frameData.data();
+            
+            for (int y = 0; y < height; y++) {
+                memcpy(dst + y * width * 4, src + y * mappedResource.RowPitch, width * 4);
+            }
+            
+            d3dContext->Unmap(stagingTexture, 0);
+        }
+        
+        stagingTexture->Release();
+        outputDuplication->ReleaseFrame();
+        
+        return SUCCEEDED(hr);
+    }
+    
+    void cleanup() {
+        if (outputDuplication) {
+            outputDuplication->Release();
+            outputDuplication = nullptr;
+        }
+        if (d3dContext) {
+            d3dContext->Release();
+            d3dContext = nullptr;
+        }
+        if (d3dDevice) {
+            d3dDevice->Release();
+            d3dDevice = nullptr;
+        }
+        initialized = false;
+    }
+};
+
+// Basic OCR functionality for game UI text recognition
+class SimpleOCR {
+private:
+    struct TextRegion {
+        int x, y, width, height;
+        std::string text;
+        float confidence;
+    };
+    
+    std::vector<TextRegion> detectedText;
+    
+public:
+    SimpleOCR() {}
+    
+    // Detect text regions in captured frame
+    std::vector<TextRegion> detectText(const std::vector<uint8_t>& frameData, int width, int height) {
+        detectedText.clear();
+        
+        // Simple text detection based on pixel patterns
+        // This is a placeholder for more sophisticated OCR
+        
+        // Look for bright regions that might be text
+        for (int y = 0; y < height - 20; y += 10) {
+            for (int x = 0; x < width - 50; x += 10) {
+                if (isTextRegion(frameData, width, height, x, y)) {
+                    TextRegion region;
+                    region.x = x;
+                    region.y = y;
+                    region.width = 40;
+                    region.height = 20;
+                    region.text = recognizeText(frameData, width, height, x, y);
+                    region.confidence = 0.8f; // Placeholder confidence
+                    
+                    if (!region.text.empty()) {
+                        detectedText.push_back(region);
+                    }
+                }
+            }
+        }
+        
+        return detectedText;
+    }
+    
+private:
+    bool isTextRegion(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Simple heuristic: look for regions with high contrast and bright pixels
+        int brightPixels = 0;
+        int totalPixels = 0;
+        
+        for (int dy = 0; dy < 20 && y + dy < height; dy++) {
+            for (int dx = 0; dx < 40 && x + dx < width; dx++) {
+                int pixelIndex = ((y + dy) * width + (x + dx)) * 4;
+                if (pixelIndex + 2 < frameData.size()) {
+                    uint8_t r = frameData[pixelIndex];
+                    uint8_t g = frameData[pixelIndex + 1];
+                    uint8_t b = frameData[pixelIndex + 2];
+                    
+                    // Check if pixel is bright (potential text)
+                    if (r > 150 || g > 150 || b > 150) {
+                        brightPixels++;
+                    }
+                    totalPixels++;
+                }
+            }
+        }
+        
+        // Text regions typically have 20-60% bright pixels
+        if (totalPixels > 0) {
+            float brightRatio = (float)brightPixels / totalPixels;
+            return brightRatio > 0.2f && brightRatio < 0.6f;
+        }
+        
+        return false;
+    }
+    
+    std::string recognizeText(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Placeholder text recognition
+        // In a real implementation, this would use OCR libraries like Tesseract
+        
+        // Simple pattern matching for common game text
+        std::string text;
+        
+        // Look for numeric patterns (common in games)
+        if (containsNumericPattern(frameData, width, height, x, y)) {
+            text = extractNumericValue(frameData, width, height, x, y);
+        }
+        // Look for common game UI labels
+        else if (containsLabelPattern(frameData, width, height, x, y)) {
+            text = extractLabel(frameData, width, height, x, y);
+        }
+        
+        return text;
+    }
+    
+    bool containsNumericPattern(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Simple check for numeric patterns (placeholder)
+        // Real OCR would analyze character shapes
+        return true; // Placeholder
+    }
+    
+    std::string extractNumericValue(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Placeholder: return a sample numeric value
+        return "100"; // Placeholder
+    }
+    
+    bool containsLabelPattern(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Placeholder for label detection
+        return false;
+    }
+    
+    std::string extractLabel(const std::vector<uint8_t>& frameData, int width, int height, int x, int y) {
+        // Placeholder for label extraction
+        return "Health"; // Placeholder
     }
 };
 
@@ -164,7 +458,7 @@ public:
             if (!(region.protection & PAGE_READWRITE)) continue;
             
             // Sample more densely in promising regions
-            size_t step = std::max(region.size / 200, (size_t)4);
+            size_t step = std::max(region.size / 300, (size_t)4); // Increased density
             for (uintptr_t addr = region.baseAddress; 
                  addr < region.baseAddress + region.size && addresses.size() < maxAddresses; 
                  addr += step) {
@@ -175,10 +469,37 @@ public:
                 if (ReadProcessMemory(hProcess, (LPCVOID)addr, &testValue, sizeof(testValue), &bytesRead) &&
                     bytesRead == sizeof(testValue)) {
                     
-                    // Look for values that could be game data
-                    if (testValue != 0 && testValue != -1 && 
-                        testValue >= -10000 && testValue <= 10000 &&
-                        (testValue % 4 == 0 || testValue % 8 == 0)) { // Often aligned values
+                    // Enhanced game data detection with better heuristics
+                    bool isGameData = false;
+                    
+                    // Health/Ammo/Score values (0-1000)
+                    if (testValue >= 0 && testValue <= 1000) {
+                        isGameData = true;
+                    }
+                    // Coordinates and offsets (-1000 to 1000)
+                    else if (testValue >= -1000 && testValue <= 1000) {
+                        isGameData = true;
+                    }
+                    // High scores and currency (1000-999999)
+                    else if (testValue >= 1000 && testValue <= 999999) {
+                        isGameData = true;
+                    }
+                    // Boolean flags (0, 1)
+                    else if (testValue == 0 || testValue == 1) {
+                        isGameData = true;
+                    }
+                    // Round numbers (common in games)
+                    else if (testValue > 0 && (testValue % 10 == 0 || testValue % 100 == 0)) {
+                        isGameData = true;
+                    }
+                    // Time values (seconds)
+                    else if (testValue > 0 && testValue < 86400) {
+                        isGameData = true;
+                    }
+                    
+                    // Avoid obviously non-game values
+                    if (isGameData && testValue != -1 && 
+                        testValue != 0xFFFFFFFF && testValue != 0xCCCCCCCC) {
                         addresses.push_back(addr);
                     }
                 }
@@ -192,11 +513,30 @@ public:
     static std::string interpretValue(int32_t value) {
         std::stringstream ss;
         
-        // Check if it could be a reasonable game value
-        if (value >= 0 && value <= 1000) {
-            ss << " [Possible: Health/Score/Count]";
+        // Enhanced game value interpretation with better categorization
+        if (value >= 0 && value <= 100) {
+            ss << " [Health/Ammo/Percentage]";
+        } else if (value >= 0 && value <= 1000) {
+            ss << " [Score/Count/Points]";
+        } else if (value >= 1000 && value <= 999999) {
+            ss << " [High Score/Currency]";
+        } else if (value >= -100 && value <= 100) {
+            ss << " [Coordinate/Offset]";
         } else if (value >= -1000 && value <= 1000) {
-            ss << " [Possible: Stat/Coordinate]";
+            ss << " [Stat/Modifier]";
+        } else if (value >= 1000000) {
+            ss << " [Large Value/ID]";
+        }
+        
+        // Check for common game patterns
+        if (value == 0) {
+            ss << " [Zero/Empty]";
+        } else if (value == 1) {
+            ss << " [Boolean/Flag]";
+        } else if (value == 100 || value == 1000 || value == 10000) {
+            ss << " [Round Number]";
+        } else if (value % 10 == 0 && value > 0 && value <= 1000) {
+            ss << " [Even/Increment]";
         }
         
         // Check if it's a valid ASCII character sequence
@@ -209,6 +549,19 @@ public:
         float floatVal = *(float*)&value;
         if (floatVal >= -1000.0f && floatVal <= 1000.0f && floatVal == floatVal) { // NaN check: NaN != NaN
             ss << " [Float: " << std::fixed << std::setprecision(2) << floatVal << "]";
+        }
+        
+        // Check for time-related values (common in games)
+        if (value > 0 && value < 86400) { // Less than 24 hours in seconds
+            int hours = value / 3600;
+            int minutes = (value % 3600) / 60;
+            int seconds = value % 60;
+            ss << " [Time: " << hours << "h" << minutes << "m" << seconds << "s]";
+        }
+        
+        // Check for memory addresses (common in game engines)
+        if (value >= 0x10000000 && value <= 0x7FFFFFFF) {
+            ss << " [Possible Address]";
         }
         
         return ss.str();
@@ -236,6 +589,43 @@ private:
     HWND hSaveGameProfileButton;
     HWND hScanGameDataButton;
     HWND hAddressSearchEdit;
+    HWND hListProfilesButton;
+    HWND hCaptureScreenButton;
+    HWND hStartVisionAnalysisButton;
+    HWND hVisionStatusLabel;
+    HWND hHybridAnalysisButton;
+    HWND hCompareMemoryVisionButton;
+    HWND hAnalyticsButton;
+    HWND hShowMetricsButton;
+    HWND hExportAnalyticsButton;
+    HWND hDashboardButton;
+    HWND hRealTimeChartsButton;
+    HWND hPerformanceMonitorButton;
+    HWND hAboutButton;
+    HWND hSettingsButton;
+    HWND hHelpButton;
+    
+    // Top Ribbon Controls
+    HWND hRibbonPanel;
+    HWND hDarkModeToggle;
+    HWND hSystemProcessesToggle;
+    HWND hRefreshRibbonButton;
+    HWND hQuickSettingsButton;
+    
+    // Modern UI state
+    bool modernThemeEnabled = true;
+    HBRUSH hBackgroundBrush;
+    HBRUSH hPanelBrush;
+    HBRUSH hCardBrush;
+    HFONT hModernFont;
+    HFONT hBoldFont;
+    HFONT hHeaderFont;
+    HWND hTooltipWindow;
+    
+    // Custom painting brushes
+    HBRUSH hButtonHoverBrush;
+    HBRUSH hButtonPressedBrush;
+    HBRUSH hBorderBrush;
     
     std::vector<ProcessInfo> processes;
     std::vector<ProcessInfo*> filteredProcesses;
@@ -246,12 +636,455 @@ private:
     std::vector<bool> addressChecked;
     std::atomic<bool> monitoring;
     std::atomic<bool> scanning;
+    std::atomic<bool> visionAnalyzing;
     ProcessInfo* selectedProcess;
     bool showSystemProcesses;
     
+    // Screen capture and vision analysis
+    ScreenCapture screenCapture;
+    SimpleOCR ocrEngine;
+    std::vector<uint8_t> lastFrameData;
+    int frameWidth, frameHeight;
+    std::vector<std::string> detectedTexts;
+    
+    // Analytics engine
+    struct PerformanceMetrics {
+        std::vector<float> memoryValues;
+        std::vector<float> visionConfidence;
+        std::vector<int64_t> timestamps;
+        float averageMemoryStability;
+        float averageVisionAccuracy;
+        int totalAnalysisRuns;
+        std::map<std::string, int> valueChangeCounts;
+        std::map<std::string, float> valueTrends;
+    } analytics;
+    
 public:
-    RealGameAnalyzerGUI() : hwnd(nullptr), monitoring(false), scanning(false), selectedProcess(nullptr), showSystemProcesses(false) {
+    RealGameAnalyzerGUI() : hwnd(nullptr), monitoring(false), scanning(false), visionAnalyzing(false), selectedProcess(nullptr), showSystemProcesses(false), frameWidth(0), frameHeight(0), hBackgroundBrush(nullptr), hPanelBrush(nullptr), hCardBrush(nullptr), hModernFont(nullptr), hBoldFont(nullptr), hHeaderFont(nullptr), hTooltipWindow(nullptr), hButtonHoverBrush(nullptr), hButtonPressedBrush(nullptr), hBorderBrush(nullptr) {
         refreshProcesses();
+        initializeModernUI();
+    }
+    
+    ~RealGameAnalyzerGUI() {
+        cleanupModernUI();
+    }
+    
+    void initializeModernUI() {
+        // Create modern brushes - will be updated based on theme
+        updateThemeBrushes();
+        
+        // Create professional fonts matching modern apps
+        hModernFont = CreateFontA(
+            -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI Variable"
+        );
+        
+        hBoldFont = CreateFontA(
+            -14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI Variable"
+        );
+        
+        hHeaderFont = CreateFontA(
+            -18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI Variable"
+        );
+        
+        // Apply fonts to all controls
+        applyModernFonts();
+    }
+    
+    void applyModernFonts() {
+        // Apply modern fonts to all controls
+        if (hwnd) {
+            EnumChildWindows(hwnd, [](HWND hChild, LPARAM lParam) -> BOOL {
+                RealGameAnalyzerGUI* pThis = (RealGameAnalyzerGUI*)lParam;
+                
+                char className[256];
+                GetClassNameA(hChild, className, sizeof(className));
+                
+                if (strcmp(className, "Button") == 0 || 
+                    strcmp(className, "Static") == 0 || 
+                    strcmp(className, "Edit") == 0 || 
+                    strcmp(className, "ListBox") == 0) {
+                    SendMessage(hChild, WM_SETFONT, (WPARAM)pThis->hModernFont, TRUE);
+                }
+                
+                return TRUE;
+            }, (LPARAM)this);
+        }
+    }
+    
+    void drawModernButton(LPDRAWITEMSTRUCT lpDrawItem) {
+        HDC hdc = lpDrawItem->hDC;
+        RECT rect = lpDrawItem->rcItem;
+        
+        // Determine button state
+        bool isPressed = (lpDrawItem->itemState & ODS_SELECTED);
+        bool isFocused = (lpDrawItem->itemState & ODS_FOCUS);
+        bool isDisabled = (lpDrawItem->itemState & ODS_DISABLED);
+        
+        // Choose colors based on theme and state
+        COLORREF bgColor, textColor, borderColor, shadowColor;
+        
+        if (modernThemeEnabled) {
+            if (isDisabled) {
+                bgColor = RGB(35, 35, 35);
+                textColor = RGB(100, 100, 100);
+                borderColor = RGB(50, 50, 50);
+                shadowColor = RGB(20, 20, 20);
+            } else if (isPressed) {
+                bgColor = ModernTheme::DARK_BUTTON_PRESSED;
+                textColor = ModernTheme::DARK_TEXT_PRIMARY;
+                borderColor = RGB(70, 70, 70);
+                shadowColor = RGB(15, 15, 15);
+            } else {
+                bgColor = ModernTheme::DARK_BUTTON_NORMAL;
+                textColor = ModernTheme::DARK_TEXT_PRIMARY;
+                borderColor = RGB(70, 70, 70);
+                shadowColor = RGB(20, 20, 20);
+            }
+        } else {
+            if (isDisabled) {
+                bgColor = RGB(245, 245, 245);
+                textColor = RGB(150, 150, 150);
+                borderColor = RGB(220, 220, 220);
+                shadowColor = RGB(200, 200, 200);
+            } else if (isPressed) {
+                bgColor = ModernTheme::BUTTON_PRESSED;
+                textColor = ModernTheme::TEXT_PRIMARY;
+                borderColor = RGB(180, 180, 180);
+                shadowColor = RGB(200, 200, 200);
+            } else {
+                bgColor = ModernTheme::BUTTON_NORMAL;
+                textColor = ModernTheme::TEXT_PRIMARY;
+                borderColor = RGB(200, 200, 200);
+                shadowColor = RGB(220, 220, 220);
+            }
+        }
+        
+        // Create brushes
+        HBRUSH bgBrush = CreateSolidBrush(bgColor);
+        HBRUSH borderBrush = CreateSolidBrush(borderColor);
+        HBRUSH shadowBrush = CreateSolidBrush(shadowColor);
+        
+        // Draw subtle shadow for depth
+        RECT shadowRect = rect;
+        shadowRect.left += 1;
+        shadowRect.top += 1;
+        shadowRect.right += 1;
+        shadowRect.bottom += 1;
+        FillRect(hdc, &shadowRect, shadowBrush);
+        
+        // Fill main background
+        FillRect(hdc, &rect, bgBrush);
+        
+        // Draw clean border
+        FrameRect(hdc, &rect, borderBrush);
+        
+        // Draw text with modern font
+        char buttonText[256];
+        GetWindowTextA(lpDrawItem->hwndItem, buttonText, sizeof(buttonText));
+        
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, textColor);
+        
+        // Apply modern font
+        HFONT oldFont = (HFONT)SelectObject(hdc, hModernFont);
+        
+        // Center text with better padding
+        RECT textRect = rect;
+        textRect.left += 12;
+        textRect.right -= 12;
+        textRect.top += 4;
+        textRect.bottom -= 4;
+        
+        DrawTextA(hdc, buttonText, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        
+        // Restore font
+        SelectObject(hdc, oldFont);
+        
+        // Clean up
+        DeleteObject(bgBrush);
+        DeleteObject(borderBrush);
+        DeleteObject(shadowBrush);
+    }
+    
+    void updateThemeBrushes() {
+        // Clean up old brushes
+        if (hBackgroundBrush) DeleteObject(hBackgroundBrush);
+        if (hPanelBrush) DeleteObject(hPanelBrush);
+        if (hCardBrush) DeleteObject(hCardBrush);
+        if (hButtonHoverBrush) DeleteObject(hButtonHoverBrush);
+        if (hButtonPressedBrush) DeleteObject(hButtonPressedBrush);
+        if (hBorderBrush) DeleteObject(hBorderBrush);
+        
+        // Create new brushes based on current theme
+        if (modernThemeEnabled) {
+            hBackgroundBrush = CreateSolidBrush(ModernTheme::DARK_BACKGROUND_PRIMARY);
+            hPanelBrush = CreateSolidBrush(ModernTheme::DARK_PANEL_BACKGROUND);
+            hCardBrush = CreateSolidBrush(ModernTheme::DARK_CARD_BACKGROUND);
+            hButtonHoverBrush = CreateSolidBrush(ModernTheme::DARK_BUTTON_HOVER);
+            hButtonPressedBrush = CreateSolidBrush(ModernTheme::DARK_BUTTON_PRESSED);
+            hBorderBrush = CreateSolidBrush(ModernTheme::DARK_BORDER_PRIMARY);
+        } else {
+            hBackgroundBrush = CreateSolidBrush(ModernTheme::BACKGROUND_PRIMARY);
+            hPanelBrush = CreateSolidBrush(ModernTheme::PANEL_BACKGROUND);
+            hCardBrush = CreateSolidBrush(ModernTheme::CARD_BACKGROUND);
+            hButtonHoverBrush = CreateSolidBrush(ModernTheme::BUTTON_HOVER);
+            hButtonPressedBrush = CreateSolidBrush(ModernTheme::BUTTON_PRESSED);
+            hBorderBrush = CreateSolidBrush(ModernTheme::BORDER_PRIMARY);
+        }
+    }
+    
+    void cleanupModernUI() {
+        if (hBackgroundBrush) DeleteObject(hBackgroundBrush);
+        if (hPanelBrush) DeleteObject(hPanelBrush);
+        if (hCardBrush) DeleteObject(hCardBrush);
+        if (hModernFont) DeleteObject(hModernFont);
+        if (hBoldFont) DeleteObject(hBoldFont);
+        if (hHeaderFont) DeleteObject(hHeaderFont);
+        if (hButtonHoverBrush) DeleteObject(hButtonHoverBrush);
+        if (hButtonPressedBrush) DeleteObject(hButtonPressedBrush);
+        if (hBorderBrush) DeleteObject(hBorderBrush);
+        if (hTooltipWindow) DestroyWindow(hTooltipWindow);
+    }
+    
+    void initializeTooltips() {
+        if (!hwnd) return;
+        
+        // Create tooltip window
+        hTooltipWindow = CreateWindowEx(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASS,
+            nullptr,
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+            CW_USEDEFAULT, CW_USEDEFAULT,
+            CW_USEDEFAULT, CW_USEDEFAULT,
+            hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+        
+        if (hTooltipWindow) {
+            // Set tooltip info for key buttons
+            addTooltip(hRefreshButton, "Refresh the list of running processes");
+            addTooltip(hScanButton, "Scan all readable memory regions in the selected process");
+            addTooltip(hScanGameDataButton, "Scan for likely game data (health, score, etc.)");
+            addTooltip(hStartButton, "Start real-time monitoring of selected addresses");
+            addTooltip(hExportButton, "Export monitored data to CSV file");
+            addTooltip(hCaptureScreenButton, "Capture current screen for vision analysis");
+            addTooltip(hStartVisionAnalysisButton, "Analyze captured screen for text detection");
+            addTooltip(hHybridAnalysisButton, "Combine memory and vision data for comprehensive analysis");
+            addTooltip(hAnalyticsButton, "Start collecting performance analytics data");
+            addTooltip(hDashboardButton, "Open professional analytics dashboard");
+            addTooltip(hAboutButton, "View application information and version details");
+            addTooltip(hSettingsButton, "View and modify application settings");
+            addTooltip(hHelpButton, "Open help guide and documentation");
+        }
+    }
+    
+    void addTooltip(HWND hControl, const char* text) {
+        if (!hTooltipWindow || !hControl) return;
+        
+        TOOLINFO ti = {};
+        ti.cbSize = sizeof(TOOLINFO);
+        ti.hwnd = hwnd;
+        ti.uId = (UINT_PTR)hControl;
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.lpszText = (LPSTR)text;
+        
+        SendMessage(hTooltipWindow, TTM_ADDTOOL, 0, (LPARAM)&ti);
+    }
+    
+    // Enhanced status reporting methods
+    void setStatus(const std::string& message) {
+        SetWindowText(hStatusLabel, message.c_str());
+    }
+    
+    void setStatus(const char* format, ...) {
+        char buffer[500];
+        va_list args;
+        va_start(args, format);
+        vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+        SetWindowText(hStatusLabel, buffer);
+    }
+    
+    // Enhanced error handling with user-friendly messages
+    void showError(const std::string& title, const std::string& message) {
+        PopupDialogs::showErrorDialog(this, title, message);
+    }
+    
+    void showWarning(const std::string& title, const std::string& message) {
+        PopupDialogs::showWarningDialog(this, title, message);
+    }
+    
+    void showInfo(const std::string& title, const std::string& message) {
+        PopupDialogs::showInfoDialog(this, title, message);
+    }
+    
+    void showCustomMessageBox(const std::string& title, const std::string& message, UINT iconType) {
+        // Create custom dialog window with dark mode support
+        HWND dialog = CreateWindowEx(
+            WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+            "STATIC", title.c_str(),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            CW_USEDEFAULT, CW_USEDEFAULT, 500, 300,
+            hwnd, nullptr, GetModuleHandle(nullptr), nullptr
+        );
+        
+        if (!dialog) return;
+        
+        // Enable dark title bar if dark mode is enabled
+        if (modernThemeEnabled) {
+            BOOL darkMode = TRUE;
+            DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        }
+        
+        // Create message text control
+        HWND messageControl = CreateWindow(
+            "STATIC", message.c_str(),
+            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOPREFIX,
+            20, 50, 460, 180,
+            dialog, nullptr, GetModuleHandle(nullptr), nullptr
+        );
+        
+        // Create OK button
+        HWND okButton = CreateWindow(
+            "BUTTON", "OK",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            200, 250, 100, 30,
+            dialog, (HMENU)1, GetModuleHandle(nullptr), nullptr
+        );
+        
+        // Apply fonts
+        SendMessage(messageControl, WM_SETFONT, (WPARAM)hModernFont, TRUE);
+        SendMessage(okButton, WM_SETFONT, (WPARAM)hModernFont, TRUE);
+        
+        // Center dialog on screen
+        RECT rect;
+        GetWindowRect(dialog, &rect);
+        int x = (GetSystemMetrics(SM_CXSCREEN) - (rect.right - rect.left)) / 2;
+        int y = (GetSystemMetrics(SM_CYSCREEN) - (rect.bottom - rect.top)) / 2;
+        SetWindowPos(dialog, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE);
+        
+        // Set up custom window procedure for dialog
+        SetWindowLongPtr(dialog, GWLP_USERDATA, (LONG_PTR)this);
+        SetWindowLongPtr(dialog, GWLP_WNDPROC, (LONG_PTR)dialogWindowProc);
+        
+        // Show dialog
+        ShowWindow(dialog, SW_SHOW);
+        UpdateWindow(dialog);
+        
+        // Message loop for dialog
+        MSG msg;
+        BOOL bRet;
+        while ((bRet = GetMessage(&msg, nullptr, 0, 0)) != 0) {
+            if (bRet == -1) {
+                break;
+            } else {
+                if (msg.hwnd == dialog || IsChild(dialog, msg.hwnd)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+                
+                // Check if dialog should close
+                if (msg.message == WM_COMMAND && LOWORD(msg.wParam) == 1) {
+                    break; // OK button clicked
+                }
+                if (msg.message == WM_CLOSE && msg.hwnd == dialog) {
+                    break; // Dialog closed
+                }
+            }
+        }
+        
+        DestroyWindow(dialog);
+    }
+    
+    static LRESULT CALLBACK dialogWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        RealGameAnalyzerGUI* pThis = (RealGameAnalyzerGUI*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        
+        switch (uMsg) {
+            case WM_PAINT: {
+                PAINTSTRUCT ps;
+                HDC hdc = BeginPaint(hwnd, &ps);
+                RECT rect;
+                GetClientRect(hwnd, &rect);
+                
+                // Fill with appropriate background
+                if (pThis && pThis->modernThemeEnabled) {
+                    FillRect(hdc, &rect, pThis->hBackgroundBrush);
+                } else {
+                    FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+                }
+                
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
+            case WM_CTLCOLORSTATIC: {
+                HDC hdc = (HDC)wParam;
+                if (pThis && pThis->modernThemeEnabled) {
+                    SetBkColor(hdc, ModernTheme::DARK_BACKGROUND_PRIMARY);
+                    SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
+                    return (LRESULT)pThis->hBackgroundBrush;
+                } else {
+                    SetBkColor(hdc, ModernTheme::BACKGROUND_PRIMARY);
+                    SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
+                    return (LRESULT)pThis->hBackgroundBrush;
+                }
+            }
+            case WM_CTLCOLORBTN: {
+                HDC hdc = (HDC)wParam;
+                if (pThis && pThis->modernThemeEnabled) {
+                    SetBkColor(hdc, ModernTheme::DARK_BUTTON_NORMAL);
+                    SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
+                    return (LRESULT)pThis->hCardBrush;
+                } else {
+                    SetBkColor(hdc, ModernTheme::BUTTON_NORMAL);
+                    SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
+                    return (LRESULT)pThis->hCardBrush;
+                }
+            }
+            case WM_DRAWITEM: {
+                LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
+                if (lpDrawItem->CtlType == ODT_BUTTON && pThis) {
+                    pThis->drawModernButton(lpDrawItem);
+                    return TRUE;
+                }
+                break;
+            }
+            case WM_COMMAND: {
+                if (LOWORD(wParam) == 1) {
+                    // OK button clicked
+                    PostMessage(hwnd, WM_CLOSE, 0, 0);
+                    return 0;
+                }
+                break;
+            }
+            case WM_CLOSE: {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+        }
+        
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+    
+    // Progress indicator methods
+    void setProgress(int percentage) {
+        SendMessage(hProgressBar, PBM_SETPOS, percentage, 0);
+    }
+    
+    void resetProgress() {
+        SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
+    }
+    
+    void showProgress(bool show) {
+        ShowWindow(hProgressBar, show ? SW_SHOW : SW_HIDE);
     }
     
     bool createWindow() {
@@ -274,21 +1107,27 @@ public:
             // Check if class is already registered (this is normal for subsequent runs)
             DWORD error = GetLastError();
             if (error != ERROR_CLASS_ALREADY_EXISTS) {
-                return false;
+            return false;
             }
         }
         
         hwnd = CreateWindowEx(
             0,
             "RealGameAnalyzerWindow",
-            "Game Analyzer - Real Process Monitor",
+            "Game Analyzer Pro - Professional Gaming Analytics Platform",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT,
-            1400, 900,
+            1200, 900,
             nullptr, nullptr,
             GetModuleHandle(nullptr),
             this
         );
+        
+        // Enable dark title bar for Windows 10/11
+        if (hwnd) {
+            BOOL darkMode = TRUE;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        }
         
         if (!hwnd) {
             return false;
@@ -302,90 +1141,189 @@ public:
     }
     
     void createControls() {
-        // Process List
-        CreateWindow("STATIC", "Select Process:", WS_VISIBLE | WS_CHILD,
-            20, 20, 120, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        // PROFESSIONAL UI DESIGN - VS Code/Steam Quality
+        
+        // Top Ribbon Panel - Ultra Clean Toolbar
+        hRibbonPanel = CreateWindow("STATIC", "", WS_VISIBLE | WS_CHILD,
+            0, 0, 1200, 45, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Ribbon Controls - Ultra Clean Spacing
+        hDarkModeToggle = CreateWindow("BUTTON", "Dark Mode", 
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            15, 12, 90, 22, hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
+        SendMessage(hDarkModeToggle, BM_SETCHECK, modernThemeEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+        
+        hSystemProcessesToggle = CreateWindow("BUTTON", "System Processes", 
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            115, 12, 120, 22, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
+        SendMessage(hSystemProcessesToggle, BM_SETCHECK, showSystemProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
+        
+        hRefreshRibbonButton = CreateWindow("BUTTON", "Refresh", 
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            250, 10, 70, 28, hwnd, (HMENU)3003, GetModuleHandle(nullptr), nullptr);
+        
+        hQuickSettingsButton = CreateWindow("BUTTON", "Settings", 
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            330, 10, 70, 28, hwnd, (HMENU)3004, GetModuleHandle(nullptr), nullptr);
+        
+        // Ultra Clean Header Section
+        CreateWindow("STATIC", "Game Analyzer Pro", WS_VISIBLE | WS_CHILD | SS_CENTER,
+            0, 60, 1200, 30, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        CreateWindow("STATIC", "Professional Gaming Analytics Platform", WS_VISIBLE | WS_CHILD | SS_CENTER,
+            0, 90, 1200, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Process Selection Panel - Ultra Clean Layout
+        CreateWindow("STATIC", "Process Selection", WS_VISIBLE | WS_CHILD,
+            20, 130, 200, 22, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hListBox = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-            20, 50, 350, 200, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
+            20, 160, 400, 250, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
         
-        hRefreshButton = CreateWindow("BUTTON", "Refresh Processes", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            390, 50, 140, 25, hwnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
+        // Process Control Buttons - Ultra Clean Spacing
+        hRefreshButton = CreateWindow("BUTTON", "Refresh", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            440, 160, 80, 28, hwnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
         
-        CreateWindow("BUTTON", "Show System Processes", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            390, 80, 160, 25, hwnd, (HMENU)5, GetModuleHandle(nullptr), nullptr);
+        CreateWindow("BUTTON", "Select", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            440, 195, 80, 28, hwnd, (HMENU)9, GetModuleHandle(nullptr), nullptr);
         
-        CreateWindow("BUTTON", "Select Highlighted Process", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            390, 110, 160, 25, hwnd, (HMENU)9, GetModuleHandle(nullptr), nullptr);
-        
-        // Search functionality
+        // Search Section - Ultra Clean Design
         CreateWindow("STATIC", "Search:", WS_VISIBLE | WS_CHILD,
-            20, 260, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            440, 230, 50, 18, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hSearchEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
-            70, 260, 250, 25, hwnd, (HMENU)6, GetModuleHandle(nullptr), nullptr);
+            440, 250, 120, 22, hwnd, (HMENU)6, GetModuleHandle(nullptr), nullptr);
+        
+        // Action Buttons - Ultra Clean Spacing
+        hStartButton = CreateWindow("BUTTON", "Start Monitoring", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            440, 280, 100, 28, hwnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
+        
+        hExportButton = CreateWindow("BUTTON", "Export", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            550, 280, 70, 28, hwnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
+        
+        // Status Label - Ultra Clean
+        hStatusLabel = CreateWindow("STATIC", "Ready - Select a process to begin", WS_VISIBLE | WS_CHILD,
+            20, 420, 600, 18, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         // Populate process list
         refreshProcessList();
         
-        // Main Control Buttons
-        hStartButton = CreateWindow("BUTTON", "Start Monitoring", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-             20, 295, 130, 30, hwnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
+        // Memory Analysis Panel - Professional Layout
+        CreateWindow("STATIC", "Memory Analysis", WS_VISIBLE | WS_CHILD,
+            750, 150, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        hExportButton = CreateWindow("BUTTON", "Export Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-             160, 295, 120, 30, hwnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
+        hScanButton = CreateWindow("BUTTON", "Scan Memory", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            750, 180, 120, 32, hwnd, (HMENU)7, GetModuleHandle(nullptr), nullptr);
         
-        // Status Label
-        hStatusLabel = CreateWindow("STATIC", "Ready - Select a process to begin", WS_VISIBLE | WS_CHILD,
-             20, 335, 600, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        // Memory Scanning Section
-        CreateWindow("STATIC", "Memory Scanning:", WS_VISIBLE | WS_CHILD,
-            20, 365, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
-        
-        hScanButton = CreateWindow("BUTTON", "Scan Process Memory", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            20, 390, 160, 30, hwnd, (HMENU)7, GetModuleHandle(nullptr), nullptr);
-        
-        hScanGameDataButton = CreateWindow("BUTTON", "Scan Game Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            190, 390, 160, 30, hwnd, (HMENU)14, GetModuleHandle(nullptr), nullptr);
+        hScanGameDataButton = CreateWindow("BUTTON", "Scan Game Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            880, 180, 120, 32, hwnd, (HMENU)14, GetModuleHandle(nullptr), nullptr);
         
         hProgressBar = CreateWindow(PROGRESS_CLASS, "", WS_VISIBLE | WS_CHILD | PBS_SMOOTH,
-            20, 430, 400, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            750, 220, 300, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        CreateWindow("STATIC", "Discovered Addresses:", WS_VISIBLE | WS_CHILD,
-            20, 460, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        // Discovered Addresses Section - Professional Layout
+        CreateWindow("STATIC", "Discovered Addresses", WS_VISIBLE | WS_CHILD,
+            750, 250, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         CreateWindow("STATIC", "Search:", WS_VISIBLE | WS_CHILD,
-            20, 485, 50, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            750, 280, 60, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hAddressSearchEdit = CreateWindow("EDIT", "", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
-            70, 485, 200, 25, hwnd, (HMENU)15, GetModuleHandle(nullptr), nullptr);
+            750, 305, 200, 24, hwnd, (HMENU)15, GetModuleHandle(nullptr), nullptr);
         
         hAddressListBox = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_EXTENDEDSEL,
-            20, 515, 450, 150, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            750, 340, 400, 200, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        // Button layout in two columns
-        hAddSelectedButton = CreateWindow("BUTTON", "Add Selected to Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            480, 515, 180, 30, hwnd, (HMENU)8, GetModuleHandle(nullptr), nullptr);
+        // Action Buttons Panel - Professional Grid Layout
+        hAddSelectedButton = CreateWindow("BUTTON", "Add to Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            750, 550, 120, 32, hwnd, (HMENU)8, GetModuleHandle(nullptr), nullptr);
         
-        hCompareButton = CreateWindow("BUTTON", "Compare Values", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            480, 550, 180, 30, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
+        hCompareButton = CreateWindow("BUTTON", "Compare", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            880, 550, 100, 32, hwnd, (HMENU)10, GetModuleHandle(nullptr), nullptr);
         
-        hValueChangeButton = CreateWindow("BUTTON", "Add Changed to Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-             480, 585, 180, 30, hwnd, (HMENU)11, GetModuleHandle(nullptr), nullptr);
+        hValueChangeButton = CreateWindow("BUTTON", "Add Changed", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            990, 550, 100, 32, hwnd, (HMENU)11, GetModuleHandle(nullptr), nullptr);
         
-        hLoadGameProfileButton = CreateWindow("BUTTON", "Load Game Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            480, 620, 180, 30, hwnd, (HMENU)12, GetModuleHandle(nullptr), nullptr);
+        hLoadGameProfileButton = CreateWindow("BUTTON", "Load Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            750, 590, 100, 32, hwnd, (HMENU)12, GetModuleHandle(nullptr), nullptr);
         
-        hSaveGameProfileButton = CreateWindow("BUTTON", "Save Game Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            480, 655, 180, 30, hwnd, (HMENU)13, GetModuleHandle(nullptr), nullptr);
+        hSaveGameProfileButton = CreateWindow("BUTTON", "Save Profile", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            860, 590, 100, 32, hwnd, (HMENU)13, GetModuleHandle(nullptr), nullptr);
         
-        // Memory Addresses List
-        CreateWindow("STATIC", "Monitored Addresses:", WS_VISIBLE | WS_CHILD,
-            20, 675, 150, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        hListProfilesButton = CreateWindow("BUTTON", "List Profiles", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            970, 590, 100, 32, hwnd, (HMENU)15, GetModuleHandle(nullptr), nullptr);
+        
+        // Vision Analysis Panel - Professional Card
+        CreateWindow("STATIC", "Vision Analysis", WS_VISIBLE | WS_CHILD,
+            30, 520, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hCaptureScreenButton = CreateWindow("BUTTON", "Capture Screen", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            30, 550, 120, 32, hwnd, (HMENU)16, GetModuleHandle(nullptr), nullptr);
+        
+        hStartVisionAnalysisButton = CreateWindow("BUTTON", "Analyze Vision", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            160, 550, 120, 32, hwnd, (HMENU)17, GetModuleHandle(nullptr), nullptr);
+        
+        hVisionStatusLabel = CreateWindow("STATIC", "Vision: Ready", WS_VISIBLE | WS_CHILD | SS_LEFT,
+            30, 590, 300, 20, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Hybrid Analysis Panel - Professional Card
+        CreateWindow("STATIC", "Hybrid Analysis", WS_VISIBLE | WS_CHILD,
+            300, 520, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hHybridAnalysisButton = CreateWindow("BUTTON", "Run Hybrid Analysis", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            300, 550, 140, 32, hwnd, (HMENU)18, GetModuleHandle(nullptr), nullptr);
+        
+        hCompareMemoryVisionButton = CreateWindow("BUTTON", "Compare Data", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            450, 550, 120, 32, hwnd, (HMENU)19, GetModuleHandle(nullptr), nullptr);
+        
+        // Analytics Panel - Professional Card
+        CreateWindow("STATIC", "Analytics Engine", WS_VISIBLE | WS_CHILD,
+            30, 630, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hAnalyticsButton = CreateWindow("BUTTON", "Start Analytics", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            30, 660, 120, 32, hwnd, (HMENU)20, GetModuleHandle(nullptr), nullptr);
+        
+        hShowMetricsButton = CreateWindow("BUTTON", "Show Metrics", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            160, 660, 120, 32, hwnd, (HMENU)21, GetModuleHandle(nullptr), nullptr);
+        
+        hExportAnalyticsButton = CreateWindow("BUTTON", "Export Analytics", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            290, 660, 120, 32, hwnd, (HMENU)22, GetModuleHandle(nullptr), nullptr);
+        
+        // Professional Dashboard Panel - Professional Card
+        CreateWindow("STATIC", "Professional Dashboard", WS_VISIBLE | WS_CHILD,
+            30, 700, 250, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hDashboardButton = CreateWindow("BUTTON", "Open Dashboard", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            30, 730, 120, 32, hwnd, (HMENU)23, GetModuleHandle(nullptr), nullptr);
+        
+        hRealTimeChartsButton = CreateWindow("BUTTON", "Real-time Charts", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            160, 730, 120, 32, hwnd, (HMENU)24, GetModuleHandle(nullptr), nullptr);
+        
+        hPerformanceMonitorButton = CreateWindow("BUTTON", "Performance Monitor", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            290, 730, 140, 32, hwnd, (HMENU)25, GetModuleHandle(nullptr), nullptr);
+        
+        // Application Control Panel - Professional Footer
+        CreateWindow("STATIC", "Application", WS_VISIBLE | WS_CHILD,
+            30, 770, 150, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        hAboutButton = CreateWindow("BUTTON", "About", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            30, 800, 80, 32, hwnd, (HMENU)26, GetModuleHandle(nullptr), nullptr);
+        
+        hSettingsButton = CreateWindow("BUTTON", "Settings", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            120, 800, 80, 32, hwnd, (HMENU)27, GetModuleHandle(nullptr), nullptr);
+        
+        hHelpButton = CreateWindow("BUTTON", "Help & Guide", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+            210, 800, 100, 32, hwnd, (HMENU)28, GetModuleHandle(nullptr), nullptr);
+        
+        // Monitored Addresses Panel - Professional Card
+        CreateWindow("STATIC", "Monitored Addresses", WS_VISIBLE | WS_CHILD,
+            750, 630, 200, 25, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
         hMemList = CreateWindow("LISTBOX", "", WS_VISIBLE | WS_CHILD | WS_BORDER | WS_VSCROLL,
-            20, 700, 640, 120, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            750, 660, 400, 150, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Initialize tooltips after all controls are created
+        initializeTooltips();
         
         // No sample addresses - start with empty list
     }
@@ -530,15 +1468,13 @@ public:
             case 4: // Refresh Processes
                 refreshProcesses();
                 refreshProcessList();
-                SetWindowText(hStatusLabel, "Process list refreshed");
+                setStatus("Process list refreshed");
                 break;
             case 5: // Toggle System Processes
                 showSystemProcesses = !showSystemProcesses;
                 refreshProcesses();
                 refreshProcessList();
-                char status[100];
-                sprintf(status, "System processes %s", showSystemProcesses ? "shown" : "hidden");
-                SetWindowText(hStatusLabel, status);
+                setStatus("System processes %s", showSystemProcesses ? "shown" : "hidden");
                 break;
             case 6: // Search text changed
                 refreshProcessList();
@@ -566,6 +1502,61 @@ public:
                 break;
             case 14: // Scan Game Data
                 scanGameData();
+                break;
+            case 15: // List Available Profiles
+                listAvailableProfiles();
+                break;
+            case 16: // Capture Screen
+                captureScreen();
+                break;
+            case 17: // Start Vision Analysis
+                startVisionAnalysis();
+                break;
+            case 18: // Run Hybrid Analysis
+                runHybridAnalysis();
+                break;
+            case 19: // Compare Memory vs Vision
+                compareMemoryVision();
+                break;
+            case 20: // Start Analytics
+                startAnalytics();
+                break;
+            case 21: // Show Metrics
+                showMetrics();
+                break;
+            case 22: // Export Analytics
+                exportAnalytics();
+                break;
+            case 23: // Open Dashboard
+                openDashboard();
+                break;
+            case 24: // Real-time Charts
+                showRealTimeCharts();
+                break;
+            case 25: // Performance Monitor
+                showPerformanceMonitor();
+                break;
+            case 26: // About
+                showAboutDialog();
+                break;
+            case 27: // Settings
+                showSettingsDialog();
+                break;
+            case 28: // Help & Guide
+                showHelpDialog();
+                break;
+            case 3001: // Dark Mode Toggle
+                toggleDarkMode();
+                break;
+            case 3002: // System Processes Toggle
+                toggleSystemProcesses();
+                break;
+            case 3003: // Refresh Ribbon Button
+                refreshProcesses();
+                refreshProcessList();
+                break;
+            case 3004: // Quick Settings
+                showSettingsDialog();
                 break;
         }
     }
@@ -664,19 +1655,21 @@ public:
     
     void scanProcessMemory() {
         if (!selectedProcess) {
-            SetWindowText(hStatusLabel, "Please select a process first");
+            showWarning("No Process Selected", "Please select a process from the list before scanning memory.");
             return;
         }
         
         if (scanning) {
-            SetWindowText(hStatusLabel, "Memory scan already in progress...");
+            showWarning("Scan In Progress", "Memory scan is already in progress. Please wait for it to complete.");
             return;
         }
         
         scanning = true;
         SetWindowText(hScanButton, "Scanning...");
         EnableWindow(hScanButton, FALSE);
-        SetWindowText(hStatusLabel, "Scanning process memory...");
+        showProgress(true);
+        resetProgress();
+        setStatus("Initializing memory scan...");
         
         // Clear previous results
         SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
@@ -687,38 +1680,47 @@ public:
         std::thread([this]() {
             try {
                 // Step 1: Get memory regions
-                SetWindowText(hStatusLabel, "Discovering memory regions...");
+                setStatus("Discovering memory regions...");
+                setProgress(10);
                 memoryRegions = MemoryScanner::scanProcessMemory(selectedProcess->pid);
                 
                 if (memoryRegions.empty()) {
-                    SetWindowText(hStatusLabel, "No readable memory regions found");
+                    showError("No Memory Regions", "No readable memory regions found in the selected process. The process may be protected or not have accessible memory.");
                     goto cleanup;
                 }
                 
-                char status[200];
-                sprintf(status, "Found %zu memory regions, scanning for readable addresses...", memoryRegions.size());
-                SetWindowText(hStatusLabel, status);
+                setStatus("Found %zu memory regions, scanning for readable addresses...", memoryRegions.size());
+                setProgress(30);
                 
                 // Step 2: Find readable addresses
                 discoveredAddresses = MemoryScanner::findReadableAddresses(selectedProcess->pid, memoryRegions, 200);
+                setProgress(70);
                 
                 // Initialize checkbox state
                 addressChecked.resize(discoveredAddresses.size(), false);
                 
                 // Step 3: Populate the address list using filter method
                 filterAddressList();
+                setProgress(90);
                 
-                sprintf(status, "Scan complete! Found %zu readable addresses", discoveredAddresses.size());
-                SetWindowText(hStatusLabel, status);
+                setStatus("Scan complete! Found %zu readable addresses", discoveredAddresses.size());
+                setProgress(100);
+                
+                if (discoveredAddresses.empty()) {
+                    showWarning("No Addresses Found", "No readable memory addresses were found. Try running as Administrator or selecting a different process.");
+                } else {
+                    showInfo("Scan Complete", "Memory scan completed successfully. You can now use 'Compare Values' to detect changes.");
+                }
                 
             } catch (const std::exception& e) {
-                SetWindowText(hStatusLabel, "Error during memory scan");
+                showError("Scan Error", "An error occurred during memory scanning. Please try again or run as Administrator.");
             }
             
         cleanup:
             scanning = false;
             SetWindowText(hScanButton, "Scan Process Memory");
             EnableWindow(hScanButton, TRUE);
+            showProgress(false);
         }).detach();
     }
     
@@ -816,28 +1818,49 @@ public:
     
     void compareValues() {
         if (!selectedProcess) {
-            SetWindowText(hStatusLabel, "Please select a process first");
+            showWarning("No Process Selected", "Please select a process from the list before comparing values.");
             return;
         }
         
         if (discoveredAddresses.empty()) {
-            SetWindowText(hStatusLabel, "Please scan memory first");
+            showWarning("No Addresses Found", "Please scan memory first using 'Scan Process Memory' or 'Scan Game Data'.");
             return;
         }
         
-        SetWindowText(hStatusLabel, "Reading current values for comparison...");
+        setStatus("Reading current values for comparison...");
+        showProgress(true);
+        resetProgress();
         
         // Read current values and store them for comparison
-        for (uintptr_t addr : discoveredAddresses) {
+        int successCount = 0;
+        for (size_t i = 0; i < discoveredAddresses.size(); ++i) {
+            uintptr_t addr = discoveredAddresses[i];
             int32_t value = 0;
             if (MemoryReader::readMemory(selectedProcess->pid, addr, &value, sizeof(value))) {
                 previousValues[addr] = value;
+                successCount++;
             }
+            
+            // Update progress
+            int progress = (int)((i + 1) * 100 / discoveredAddresses.size());
+            setProgress(progress);
         }
         
-        char status[200];
-        sprintf(status, "Stored %zu values for comparison. Now do something in-game and click 'Show Changed Values'", previousValues.size());
-        SetWindowText(hStatusLabel, status);
+        showProgress(false);
+        
+        if (successCount == 0) {
+            showError("Read Error", "Could not read any memory values. The process may be protected or no longer accessible. Try running as Administrator.");
+        } else if (successCount < discoveredAddresses.size()) {
+            char warningMsg[200];
+            sprintf(warningMsg, "Only %d of %zu addresses could be read. Some values may be protected.", successCount, (int)discoveredAddresses.size());
+            showWarning("Partial Read", warningMsg);
+        } else {
+            char infoMsg[200];
+            sprintf(infoMsg, "Successfully stored %d values for comparison. Now interact with the game and click 'Show Changed Values' to see what changed.", successCount);
+            showInfo("Baseline Captured", infoMsg);
+        }
+        
+        setStatus("Baseline captured: %d values stored for comparison", successCount);
     }
     
     void showChangedValues() {
@@ -928,26 +1951,46 @@ public:
     
     void loadGameProfile() {
         if (!selectedProcess) {
-            SetWindowText(hStatusLabel, "Please select a process first");
+            showWarning("No Process Selected", "Please select a process from the list before loading a game profile.");
             return;
         }
         
-        // Create filename based on process name
-        std::string filename = selectedProcess->name + "_profile.txt";
+        setStatus("Loading game profile for %s...", selectedProcess->name.c_str());
         
-        FILE* file = fopen(filename.c_str(), "r");
+        // Try to load from game_profiles directory first
+        std::string gameProfilesPath = "game_profiles/" + selectedProcess->name + ".txt";
+        FILE* file = fopen(gameProfilesPath.c_str(), "r");
+        
+        // If not found in game_profiles, try local profile
+        if (!file) {
+            std::string localProfile = selectedProcess->name + "_profile.txt";
+            file = fopen(localProfile.c_str(), "r");
+        }
+        
         if (file) {
             char line[256];
             int loadedCount = 0;
+            std::string profileSource = (file == fopen(gameProfilesPath.c_str(), "r")) ? "game_profiles" : "local";
             
             while (fgets(line, sizeof(line), file)) {
                 // Skip comments and empty lines
                 if (line[0] == '#' || line[0] == '\n') continue;
                 
-                // Parse address and name
+                // Parse address and name (support both formats)
                 uintptr_t address;
                 char name[100];
-                if (sscanf(line, "0x%llX %99s", (unsigned long long*)&address, name) == 2) {
+                int parsed = 0;
+                
+                // Try format: Name=0xAddress
+                if (sscanf(line, "%99[^=]=0x%llX", name, (unsigned long long*)&address) == 2) {
+                    parsed = 2;
+                }
+                // Try format: 0xAddress Name
+                else if (sscanf(line, "0x%llX %99s", (unsigned long long*)&address, name) == 2) {
+                    parsed = 2;
+                }
+                
+                if (parsed == 2) {
                     // Check if address already exists
                     bool exists = false;
                     for (const auto& memAddr : memoryAddresses) {
@@ -967,31 +2010,929 @@ public:
             
             fclose(file);
             
-            char status[200];
-            sprintf(status, "Loaded %d addresses from %s", loadedCount, filename.c_str());
-            SetWindowText(hStatusLabel, status);
+            if (loadedCount > 0) {
+                char infoMsg[200];
+                sprintf(infoMsg, "Successfully loaded %d addresses from %s profile. You can now start monitoring!", loadedCount, selectedProcess->name.c_str());
+                showInfo("Profile Loaded", infoMsg);
+                setStatus("Loaded %d addresses from %s profile", loadedCount, profileSource.c_str());
+            } else {
+                showWarning("No New Addresses", "Profile loaded but no new addresses were added. All addresses may already be in your monitoring list.");
+            }
         } else {
-            char status[200];
-            sprintf(status, "No profile found for %s. Save one first!", selectedProcess->name.c_str());
-            SetWindowText(hStatusLabel, status);
+            // Check if game_profiles directory exists
+            if (fopen("game_profiles", "r")) {
+                char warningMsg[200];
+                sprintf(warningMsg, "No profile found for '%s'. Available profiles are in the 'game_profiles' folder. Save a profile first or use memory scanning.", selectedProcess->name.c_str());
+                showWarning("No Profile Found", warningMsg);
+            } else {
+                char warningMsg[200];
+                sprintf(warningMsg, "No profile found for '%s'. Use 'Save Game Profile' after scanning memory to create a profile.", selectedProcess->name.c_str());
+                showWarning("No Profile Found", warningMsg);
+            }
         }
+    }
+    
+    void listAvailableProfiles() {
+        setStatus("Scanning for available game profiles...");
+        
+        std::string profilesList = "Available Game Profiles:\n\n";
+        int profileCount = 0;
+        
+        // Check game_profiles directory
+        FILE* dir = fopen("game_profiles", "r");
+        if (dir) {
+            fclose(dir);
+            profilesList += "Built-in Profiles (game_profiles/):\n";
+            
+            // List known profiles
+            std::vector<std::string> knownProfiles = {
+                "Counter-Strike 2.txt",
+                "Valorant.txt", 
+                "Dwarf Fortress.txt",
+                "Planescape Torment.txt"
+            };
+            
+            for (const auto& profile : knownProfiles) {
+                std::string path = "game_profiles/" + profile;
+                FILE* file = fopen(path.c_str(), "r");
+                if (file) {
+                    fclose(file);
+                    profilesList += "  - " + profile + "\n";
+                    profileCount++;
+                }
+            }
+            profilesList += "\n";
+        }
+        
+        // Check for local profiles
+        profilesList += "Local Profiles (saved by you):\n";
+        bool foundLocal = false;
+        
+        // This is a simplified check - in a real implementation, you'd scan the directory
+        for (const auto& process : processes) {
+            std::string localProfile = process.name + "_profile.txt";
+            FILE* file = fopen(localProfile.c_str(), "r");
+            if (file) {
+                fclose(file);
+                profilesList += "  - " + localProfile + "\n";
+                profileCount++;
+                foundLocal = true;
+            }
+        }
+        
+        if (!foundLocal) {
+            profilesList += "  No local profiles found\n";
+        }
+        
+        profilesList += "\nTo use a profile:\n";
+        profilesList += "1. Select the matching process from the list\n";
+        profilesList += "2. Click 'Load Game Profile'\n";
+        profilesList += "3. Start monitoring!\n";
+        
+        if (profileCount > 0) {
+            showInfo("Available Profiles", profilesList.c_str());
+            setStatus("Found %d available game profiles", profileCount);
+        } else {
+            showWarning("No Profiles Found", "No game profiles were found. Use 'Save Game Profile' after scanning memory to create profiles.");
+        }
+    }
+    
+    void captureScreen() {
+        setStatus("Initializing screen capture...");
+        
+        // Initialize screen capture if not already done
+        if (!screenCapture.initialize()) {
+            showError("Capture Error", "Failed to initialize screen capture. Make sure DirectX 11 is available.");
+            SetWindowText(hVisionStatusLabel, "Vision: Failed to initialize");
+            return;
+        }
+        
+        setStatus("Capturing screen frame...");
+        
+        // Capture a frame
+        if (screenCapture.captureFrame(lastFrameData, frameWidth, frameHeight)) {
+            char status[200];
+            sprintf(status, "Vision: Captured %dx%d frame (%zu bytes)", frameWidth, frameHeight, lastFrameData.size());
+            SetWindowText(hVisionStatusLabel, status);
+            
+            char infoMsg[200];
+            sprintf(infoMsg, "Successfully captured screen frame! Frame size: %dx%d pixels", frameWidth, frameHeight);
+            showInfo("Screen Captured", infoMsg);
+            setStatus("Screen captured successfully - %dx%d pixels", frameWidth, frameHeight);
+        } else {
+            showError("Capture Failed", "Failed to capture screen frame. The screen may be protected or not accessible.");
+            SetWindowText(hVisionStatusLabel, "Vision: Capture failed");
+        }
+    }
+    
+    void startVisionAnalysis() {
+        if (lastFrameData.empty()) {
+            showWarning("No Frame Available", "Please capture a screen frame first using 'Capture Screen'.");
+            return;
+        }
+        
+        if (visionAnalyzing) {
+            showWarning("Analysis In Progress", "Vision analysis is already running. Please wait for it to complete.");
+            return;
+        }
+        
+        visionAnalyzing = true;
+        SetWindowText(hStartVisionAnalysisButton, "Analyzing...");
+        EnableWindow(hStartVisionAnalysisButton, FALSE);
+        SetWindowText(hVisionStatusLabel, "Vision: Analyzing frame...");
+        setStatus("Starting vision analysis...");
+        
+        // Start vision analysis in a separate thread
+        std::thread([this]() {
+            try {
+                // Simulate vision analysis processing
+                setStatus("Analyzing frame data...");
+                
+                // Basic frame analysis (placeholder for future OCR/vision processing)
+                analyzeFrameData();
+                
+                SetWindowText(hVisionStatusLabel, "Vision: Analysis complete");
+                
+                // Show detected text results
+                if (detectedTexts.empty()) {
+                    showInfo("Vision Analysis Complete", "Frame analysis completed successfully, but no text was detected. Try capturing a different area of the screen.");
+                } else {
+                    std::string textResults = "Detected text regions:\n\n";
+                    for (size_t i = 0; i < detectedTexts.size() && i < 10; ++i) {
+                        textResults += "- " + detectedTexts[i] + "\n";
+                    }
+                    if (detectedTexts.size() > 10) {
+                        textResults += "... and " + std::to_string(detectedTexts.size() - 10) + " more regions";
+                    }
+                    
+                    showInfo("Vision Analysis Complete", textResults.c_str());
+                }
+                
+                setStatus("Vision analysis completed - %zu text regions found", detectedTexts.size());
+                
+            } catch (const std::exception& e) {
+                showError("Analysis Error", "An error occurred during vision analysis.");
+                SetWindowText(hVisionStatusLabel, "Vision: Analysis failed");
+            }
+            
+            visionAnalyzing = false;
+            SetWindowText(hStartVisionAnalysisButton, "Start Vision Analysis");
+            EnableWindow(hStartVisionAnalysisButton, TRUE);
+        }).detach();
+    }
+    
+    void analyzeFrameData() {
+        setStatus("Processing frame data with OCR...");
+        
+        // Run OCR text detection
+        auto textRegions = ocrEngine.detectText(lastFrameData, frameWidth, frameHeight);
+        
+        // Store detected texts
+        detectedTexts.clear();
+        for (const auto& region : textRegions) {
+            detectedTexts.push_back(region.text);
+        }
+        
+        setStatus("OCR analysis: Found %zu text regions", textRegions.size());
+        
+        // Basic frame statistics
+        int totalPixels = frameWidth * frameHeight;
+        int brightPixels = 0;
+        
+        // Analyze pixel data for additional insights
+        for (size_t i = 0; i < lastFrameData.size(); i += 4) {
+            if (i + 2 < lastFrameData.size()) {
+                uint8_t r = lastFrameData[i];
+                uint8_t g = lastFrameData[i + 1];
+                uint8_t b = lastFrameData[i + 2];
+                
+                // Bright pixels (for potential text/UI detection)
+                if (r > 200 || g > 200 || b > 200) {
+                    brightPixels++;
+                }
+            }
+        }
+        
+        // Update vision status with detailed results
+        char visionStatus[300];
+        sprintf(visionStatus, "Vision: %dx%d, %d bright px, %zu text regions", 
+                frameWidth, frameHeight, brightPixels, textRegions.size());
+        SetWindowText(hVisionStatusLabel, visionStatus);
+        
+        setStatus("Vision analysis complete: %zu text regions detected", textRegions.size());
+    }
+    
+    void runHybridAnalysis() {
+        if (!selectedProcess) {
+            showWarning("No Process Selected", "Please select a process from the list before running hybrid analysis.");
+            return;
+        }
+        
+        if (memoryAddresses.empty() && discoveredAddresses.empty()) {
+            showWarning("No Memory Data", "Please scan memory first using 'Scan Process Memory' or 'Scan Game Data'.");
+            return;
+        }
+        
+        if (detectedTexts.empty()) {
+            showWarning("No Vision Data", "Please capture and analyze screen first using 'Capture Screen' and 'Start Vision Analysis'.");
+            return;
+        }
+        
+        setStatus("Running hybrid analysis - combining memory and vision data...");
+        showProgress(true);
+        resetProgress();
+        
+        // Run hybrid analysis in a separate thread
+        std::thread([this]() {
+            try {
+                setStatus("Analyzing memory values...");
+                setProgress(20);
+                
+                // Analyze memory data
+                std::vector<std::string> memoryInsights = analyzeMemoryData();
+                
+                setStatus("Analyzing vision data...");
+                setProgress(50);
+                
+                // Analyze vision data
+                std::vector<std::string> visionInsights = analyzeVisionData();
+                
+                setStatus("Correlating memory and vision data...");
+                setProgress(80);
+                
+                // Correlate memory and vision data
+                std::vector<std::string> correlations = correlateMemoryVision(memoryInsights, visionInsights);
+                
+                setProgress(100);
+                showProgress(false);
+                
+                // Display hybrid analysis results
+                displayHybridResults(memoryInsights, visionInsights, correlations);
+                
+            } catch (const std::exception& e) {
+                showProgress(false);
+                showError("Hybrid Analysis Error", "An error occurred during hybrid analysis.");
+            }
+        }).detach();
+    }
+    
+    std::vector<std::string> analyzeMemoryData() {
+        std::vector<std::string> insights;
+        
+        // Analyze monitored addresses
+        for (const auto& memAddr : memoryAddresses) {
+            int32_t value;
+            if (MemoryReader::readMemory(selectedProcess->pid, memAddr.second, &value, sizeof(value))) {
+                std::string interpretation = MemoryScanner::interpretValue(value);
+                insights.push_back(memAddr.first + ": " + std::to_string(value) + interpretation);
+            }
+        }
+        
+        // Analyze discovered addresses
+        for (size_t i = 0; i < discoveredAddresses.size(); ++i) {
+            uintptr_t addr = discoveredAddresses[i];
+            int32_t value;
+            if (MemoryReader::readMemory(selectedProcess->pid, addr, &value, sizeof(value))) {
+                std::string interpretation = MemoryScanner::interpretValue(value);
+                insights.push_back("Discovered_" + std::to_string(i + 1) + ": " + std::to_string(value) + interpretation);
+            }
+        }
+        
+        return insights;
+    }
+    
+    std::vector<std::string> analyzeVisionData() {
+        std::vector<std::string> insights;
+        
+        for (const auto& text : detectedTexts) {
+            // Analyze detected text for game-related patterns
+            if (isNumeric(text)) {
+                insights.push_back("Numeric Text: " + text + " (possible health/score/ammo)");
+            } else if (isGameLabel(text)) {
+                insights.push_back("Game Label: " + text + " (UI element detected)");
+            } else {
+                insights.push_back("Text Region: " + text + " (unknown content)");
+            }
+        }
+        
+        return insights;
+    }
+    
+    std::vector<std::string> correlateMemoryVision(const std::vector<std::string>& memoryInsights, const std::vector<std::string>& visionInsights) {
+        std::vector<std::string> correlations;
+        
+        // Look for potential correlations between memory values and detected text
+        for (const auto& memInsight : memoryInsights) {
+            for (const auto& visionInsight : visionInsights) {
+                // Check if memory value matches detected text
+                if (containsNumericMatch(memInsight, visionInsight)) {
+                    correlations.push_back("CORRELATION: " + memInsight + " matches " + visionInsight);
+                }
+            }
+        }
+        
+        // Add general insights
+        if (!correlations.empty()) {
+            correlations.insert(correlations.begin(), "Found " + std::to_string(correlations.size()) + " potential correlations between memory and vision data");
+        } else {
+            correlations.push_back("No direct correlations found - memory and vision data may represent different game aspects");
+        }
+        
+        return correlations;
+    }
+    
+    bool isNumeric(const std::string& text) {
+        if (text.empty()) return false;
+        for (char c : text) {
+            if (!std::isdigit(c)) return false;
+        }
+        return true;
+    }
+    
+    bool isGameLabel(const std::string& text) {
+        std::vector<std::string> gameLabels = {"Health", "Score", "Ammo", "Money", "Level", "XP", "Energy", "Shield"};
+        for (const auto& label : gameLabels) {
+            if (text.find(label) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    bool containsNumericMatch(const std::string& memory, const std::string& vision) {
+        // Extract numbers from both strings and compare
+        std::string memNum, visNum;
+        
+        for (char c : memory) {
+            if (std::isdigit(c)) memNum += c;
+        }
+        
+        for (char c : vision) {
+            if (std::isdigit(c)) visNum += c;
+        }
+        
+        return !memNum.empty() && !visNum.empty() && memNum == visNum;
+    }
+    
+    void displayHybridResults(const std::vector<std::string>& memoryInsights, const std::vector<std::string>& visionInsights, const std::vector<std::string>& correlations) {
+        std::string results = "HYBRID ANALYSIS RESULTS\n\n";
+        
+        results += "MEMORY INSIGHTS (" + std::to_string(memoryInsights.size()) + "):\n";
+        for (size_t i = 0; i < memoryInsights.size() && i < 5; ++i) {
+            results += "- " + memoryInsights[i] + "\n";
+        }
+        if (memoryInsights.size() > 5) {
+            results += "... and " + std::to_string(memoryInsights.size() - 5) + " more\n";
+        }
+        results += "\n";
+        
+        results += "VISION INSIGHTS (" + std::to_string(visionInsights.size()) + "):\n";
+        for (size_t i = 0; i < visionInsights.size() && i < 5; ++i) {
+            results += "- " + visionInsights[i] + "\n";
+        }
+        if (visionInsights.size() > 5) {
+            results += "... and " + std::to_string(visionInsights.size() - 5) + " more\n";
+        }
+        results += "\n";
+        
+        results += "CORRELATIONS (" + std::to_string(correlations.size()) + "):\n";
+        for (const auto& correlation : correlations) {
+            results += "- " + correlation + "\n";
+        }
+        
+        showInfo("Hybrid Analysis Complete", results.c_str());
+        setStatus("Hybrid analysis completed - %zu memory, %zu vision, %zu correlations", memoryInsights.size(), visionInsights.size(), correlations.size());
+    }
+    
+    void compareMemoryVision() {
+        if (!selectedProcess) {
+            showWarning("No Process Selected", "Please select a process from the list before comparing memory and vision data.");
+            return;
+        }
+        
+        if (memoryAddresses.empty() && discoveredAddresses.empty()) {
+            showWarning("No Memory Data", "Please scan memory first using 'Scan Process Memory' or 'Scan Game Data'.");
+            return;
+        }
+        
+        if (detectedTexts.empty()) {
+            showWarning("No Vision Data", "Please capture and analyze screen first using 'Capture Screen' and 'Start Vision Analysis'.");
+            return;
+        }
+        
+        setStatus("Comparing memory values with detected text...");
+        
+        std::string comparison = "MEMORY vs VISION COMPARISON\n\n";
+        
+        // Get current memory values
+        std::vector<std::pair<std::string, int32_t>> currentValues;
+        for (const auto& memAddr : memoryAddresses) {
+            int32_t value;
+            if (MemoryReader::readMemory(selectedProcess->pid, memAddr.second, &value, sizeof(value))) {
+                currentValues.push_back({memAddr.first, value});
+            }
+        }
+        
+        comparison += "MEMORY VALUES:\n";
+        for (const auto& val : currentValues) {
+            comparison += "- " + val.first + ": " + std::to_string(val.second) + "\n";
+        }
+        
+        comparison += "\nDETECTED TEXT:\n";
+        for (const auto& text : detectedTexts) {
+            comparison += "- " + text + "\n";
+        }
+        
+        comparison += "\nANALYSIS:\n";
+        comparison += "- Memory addresses: " + std::to_string(currentValues.size()) + "\n";
+        comparison += "- Text regions: " + std::to_string(detectedTexts.size()) + "\n";
+        comparison += "- Use 'Run Hybrid Analysis' for detailed correlation analysis\n";
+        
+        showInfo("Memory vs Vision Comparison", comparison.c_str());
+        setStatus("Comparison complete - %zu memory values, %zu text regions", currentValues.size(), detectedTexts.size());
+    }
+    
+    void startAnalytics() {
+        if (!selectedProcess) {
+            showWarning("No Process Selected", "Please select a process from the list before starting analytics.");
+            return;
+        }
+        
+        if (memoryAddresses.empty() && discoveredAddresses.empty()) {
+            showWarning("No Data Available", "Please scan memory first to collect data for analytics.");
+            return;
+        }
+        
+        setStatus("Starting analytics engine - collecting performance metrics...");
+        showProgress(true);
+        resetProgress();
+        
+        // Run analytics in a separate thread
+        std::thread([this]() {
+            try {
+                setStatus("Collecting memory stability metrics...");
+                setProgress(25);
+                
+                // Collect memory stability data
+                collectMemoryStability();
+                
+                setStatus("Analyzing vision accuracy metrics...");
+                setProgress(50);
+                
+                // Collect vision accuracy data
+                collectVisionAccuracy();
+                
+                setStatus("Calculating performance trends...");
+                setProgress(75);
+                
+                // Calculate trends and patterns
+                calculateTrends();
+                
+                setProgress(100);
+                showProgress(false);
+                
+                analytics.totalAnalysisRuns++;
+                
+                showInfo("Analytics Complete", "Performance metrics collected successfully! Use 'Show Metrics' to view detailed analytics.");
+                setStatus("Analytics completed - %d analysis runs performed", analytics.totalAnalysisRuns);
+                
+            } catch (const std::exception& e) {
+                showProgress(false);
+                showError("Analytics Error", "An error occurred during analytics collection.");
+            }
+        }).detach();
+    }
+    
+    void collectMemoryStability() {
+        // Collect memory values over time for stability analysis
+        for (const auto& memAddr : memoryAddresses) {
+            int32_t value;
+            if (MemoryReader::readMemory(selectedProcess->pid, memAddr.second, &value, sizeof(value))) {
+                analytics.memoryValues.push_back(static_cast<float>(value));
+                analytics.timestamps.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+                
+                // Track value changes
+                std::string addrStr = MemoryScanner::addressToString(memAddr.second);
+                analytics.valueChangeCounts[memAddr.first]++;
+            }
+        }
+        
+        // Calculate average stability (lower variance = higher stability)
+        if (analytics.memoryValues.size() > 1) {
+            float sum = 0.0f;
+            for (float val : analytics.memoryValues) {
+                sum += val;
+            }
+            float mean = sum / analytics.memoryValues.size();
+            
+            float variance = 0.0f;
+            for (float val : analytics.memoryValues) {
+                variance += (val - mean) * (val - mean);
+            }
+            variance /= analytics.memoryValues.size();
+            
+            // Stability score (0-100, higher is more stable)
+            analytics.averageMemoryStability = std::max(0.0f, 100.0f - (variance / 1000.0f));
+        }
+    }
+    
+    void collectVisionAccuracy() {
+        // Analyze vision detection accuracy
+        int totalRegions = detectedTexts.size();
+        int confidentRegions = 0;
+        
+        for (const auto& text : detectedTexts) {
+            // Simple confidence scoring based on text characteristics
+            float confidence = 0.0f;
+            
+            if (isNumeric(text)) {
+                confidence = 0.9f; // Numeric text is usually accurate
+            } else if (isGameLabel(text)) {
+                confidence = 0.8f; // Game labels are usually accurate
+            } else if (!text.empty()) {
+                confidence = 0.6f; // Other text has lower confidence
+            }
+            
+            analytics.visionConfidence.push_back(confidence);
+            if (confidence > 0.7f) {
+                confidentRegions++;
+            }
+        }
+        
+        // Calculate average vision accuracy
+        if (!analytics.visionConfidence.empty()) {
+            float sum = 0.0f;
+            for (float conf : analytics.visionConfidence) {
+                sum += conf;
+            }
+            analytics.averageVisionAccuracy = sum / analytics.visionConfidence.size() * 100.0f;
+        }
+    }
+    
+    void calculateTrends() {
+        // Calculate trends for memory values
+        if (analytics.memoryValues.size() >= 3) {
+            // Simple linear trend calculation
+            int n = analytics.memoryValues.size();
+            float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+            
+            for (int i = 0; i < n; i++) {
+                sumX += i;
+                sumY += analytics.memoryValues[i];
+                sumXY += i * analytics.memoryValues[i];
+                sumX2 += i * i;
+            }
+            
+            float slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            analytics.valueTrends["Memory"] = slope;
+        }
+        
+        // Calculate trends for vision confidence
+        if (analytics.visionConfidence.size() >= 3) {
+            int n = analytics.visionConfidence.size();
+            float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+            
+            for (int i = 0; i < n; i++) {
+                sumX += i;
+                sumY += analytics.visionConfidence[i];
+                sumXY += i * analytics.visionConfidence[i];
+                sumX2 += i * i;
+            }
+            
+            float slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            analytics.valueTrends["Vision"] = slope;
+        }
+    }
+    
+    void showMetrics() {
+        if (analytics.totalAnalysisRuns == 0) {
+            showWarning("No Analytics Data", "Please run 'Start Analytics' first to collect performance metrics.");
+            return;
+        }
+        
+        std::string metrics = "PERFORMANCE ANALYTICS REPORT\n\n";
+        
+        metrics += "OVERVIEW:\n";
+        metrics += "- Total Analysis Runs: " + std::to_string(analytics.totalAnalysisRuns) + "\n";
+        metrics += "- Memory Samples: " + std::to_string(analytics.memoryValues.size()) + "\n";
+        metrics += "- Vision Samples: " + std::to_string(analytics.visionConfidence.size()) + "\n\n";
+        
+        metrics += "PERFORMANCE METRICS:\n";
+        metrics += "- Memory Stability: " + std::to_string((int)analytics.averageMemoryStability) + "%\n";
+        metrics += "- Vision Accuracy: " + std::to_string((int)analytics.averageVisionAccuracy) + "%\n\n";
+        
+        metrics += "TRENDS:\n";
+        for (const auto& trend : analytics.valueTrends) {
+            std::string trendDirection = trend.second > 0 ? "Increasing" : (trend.second < 0 ? "Decreasing" : "Stable");
+            metrics += "- " + trend.first + ": " + trendDirection + " (" + std::to_string(trend.second) + ")\n";
+        }
+        
+        metrics += "\nVALUE CHANGES:\n";
+        for (const auto& change : analytics.valueChangeCounts) {
+            metrics += "- " + change.first + ": " + std::to_string(change.second) + " changes\n";
+        }
+        
+        showInfo("Performance Analytics", metrics.c_str());
+        setStatus("Analytics report displayed - %d runs, %.1f%% stability, %.1f%% accuracy", 
+                 analytics.totalAnalysisRuns, analytics.averageMemoryStability, analytics.averageVisionAccuracy);
+    }
+    
+    void exportAnalytics() {
+        if (analytics.totalAnalysisRuns == 0) {
+            showWarning("No Analytics Data", "Please run 'Start Analytics' first to collect data for export.");
+            return;
+        }
+        
+        setStatus("Exporting analytics data to CSV...");
+        
+        FILE* file = fopen("analytics_report.csv", "w");
+        if (file) {
+            // Write CSV header
+            fprintf(file, "Timestamp,Memory_Value,Vision_Confidence,Memory_Stability,Vision_Accuracy,Analysis_Run\n");
+            
+            // Write data points
+            size_t maxSamples = std::max(analytics.memoryValues.size(), analytics.visionConfidence.size());
+            for (size_t i = 0; i < maxSamples; ++i) {
+                int64_t timestamp = (i < analytics.timestamps.size()) ? analytics.timestamps[i] : 0;
+                float memoryVal = (i < analytics.memoryValues.size()) ? analytics.memoryValues[i] : 0.0f;
+                float visionConf = (i < analytics.visionConfidence.size()) ? analytics.visionConfidence[i] : 0.0f;
+                
+                fprintf(file, "%lld,%.2f,%.2f,%.2f,%.2f,%d\n", 
+                        timestamp, memoryVal, visionConf, 
+                        analytics.averageMemoryStability, analytics.averageVisionAccuracy, 
+                        analytics.totalAnalysisRuns);
+            }
+            
+            fclose(file);
+            
+            showInfo("Analytics Exported", "Analytics data exported to 'analytics_report.csv'. You can open this in Excel or Google Sheets for detailed analysis.");
+            setStatus("Analytics exported to analytics_report.csv");
+        } else {
+            showError("Export Error", "Could not create analytics export file!");
+        }
+    }
+    
+    void openDashboard() {
+        if (!selectedProcess) {
+            showWarning("No Process Selected", "Please select a process from the list before opening the dashboard.");
+            return;
+        }
+        
+        if (analytics.totalAnalysisRuns == 0) {
+            showWarning("No Analytics Data", "Please run 'Start Analytics' first to collect data for the dashboard.");
+            return;
+        }
+        
+        setStatus("Opening professional analytics dashboard...");
+        
+        // Create comprehensive dashboard report
+        std::string dashboard = " PROFESSIONAL GAMING ANALYTICS DASHBOARD \n";
+        dashboard += "===========================================================\n\n";
+        
+        dashboard += " GAME: " + selectedProcess->name + " (PID: " + std::to_string(selectedProcess->pid) + ")\n";
+        dashboard += " Session Duration: " + std::to_string(analytics.totalAnalysisRuns) + " analysis cycles\n\n";
+        
+        dashboard += " PERFORMANCE OVERVIEW:\n";
+        dashboard += "------------------------------------------------------------------\n";
+        dashboard += "- Memory Stability: " + std::to_string((int)analytics.averageMemoryStability) + "% ";
+        if (analytics.averageMemoryStability > 80) dashboard += "🟢 EXCELLENT\n";
+        else if (analytics.averageMemoryStability > 60) dashboard += "🟡 GOOD\n";
+        else dashboard += "🔴 NEEDS ATTENTION\n";
+        
+        dashboard += "- Vision Accuracy: " + std::to_string((int)analytics.averageVisionAccuracy) + "% ";
+        if (analytics.averageVisionAccuracy > 80) dashboard += "🟢 EXCELLENT\n";
+        else if (analytics.averageVisionAccuracy > 60) dashboard += "🟡 GOOD\n";
+        else dashboard += "🔴 NEEDS ATTENTION\n";
+        
+        dashboard += "- Data Points: " + std::to_string(analytics.memoryValues.size()) + " memory, " + 
+                    std::to_string(analytics.visionConfidence.size()) + " vision\n\n";
+        
+        dashboard += " TREND ANALYSIS:\n";
+        dashboard += "------------------------------------------------------------------\n";
+        for (const auto& trend : analytics.valueTrends) {
+            std::string trendIcon = trend.second > 0 ? "" : (trend.second < 0 ? "" : "→");
+            std::string trendDirection = trend.second > 0 ? "RISING" : (trend.second < 0 ? "FALLING" : "STABLE");
+            dashboard += trendIcon + " " + trend.first + ": " + trendDirection + " (slope: " + std::to_string(trend.second) + ")\n";
+        }
+        
+        dashboard += "\n GAME STATE INSIGHTS:\n";
+        dashboard += "------------------------------------------------------------------\n";
+        
+        // Generate insights based on analytics
+        if (analytics.averageMemoryStability > 80) {
+            dashboard += "✅ Game memory is highly stable - consistent performance\n";
+        }
+        if (analytics.averageVisionAccuracy > 80) {
+            dashboard += "✅ UI detection is highly accurate - reliable text recognition\n";
+        }
+        if (analytics.valueChangeCounts.size() > 0) {
+            dashboard += " " + std::to_string(analytics.valueChangeCounts.size()) + " memory addresses being tracked\n";
+        }
+        
+        dashboard += "\n RECOMMENDATIONS:\n";
+        dashboard += "------------------------------------------------------------------\n";
+        if (analytics.averageMemoryStability < 70) {
+            dashboard += "WARNING: Consider running as Administrator for better memory access\n";
+        }
+        if (analytics.averageVisionAccuracy < 70) {
+            dashboard += "WARNING: Try capturing different screen areas for better text detection\n";
+        }
+        dashboard += " Continue monitoring for performance optimization opportunities\n";
+        
+        showInfo("Professional Analytics Dashboard", dashboard.c_str());
+        setStatus("Dashboard displayed - Professional analytics overview complete");
+    }
+    
+    void showRealTimeCharts() {
+        if (analytics.totalAnalysisRuns == 0) {
+            showWarning("No Analytics Data", "Please run 'Start Analytics' first to generate chart data.");
+            return;
+        }
+        
+        setStatus("Generating real-time performance charts...");
+        
+        // Create ASCII-style charts for real-time visualization
+        std::string charts = " REAL-TIME PERFORMANCE CHARTS \n";
+        charts += "===========================================================\n\n";
+        
+        // Memory Values Chart
+        charts += " MEMORY VALUES TREND:\n";
+        charts += "------------------------------------------------------------------\n";
+        
+        if (!analytics.memoryValues.empty()) {
+            // Create ASCII bar chart
+            float maxVal = *std::max_element(analytics.memoryValues.begin(), analytics.memoryValues.end());
+            float minVal = *std::min_element(analytics.memoryValues.begin(), analytics.memoryValues.end());
+            float range = maxVal - minVal;
+            
+            for (size_t i = 0; i < std::min(analytics.memoryValues.size(), (size_t)20); ++i) {
+                float normalized = range > 0 ? (analytics.memoryValues[i] - minVal) / range : 0.5f;
+                int barLength = (int)(normalized * 40);
+                
+                charts += "Sample " + std::to_string(i + 1) + ": ";
+                for (int j = 0; j < barLength; ++j) {
+                    charts += "█";
+                }
+                charts += " " + std::to_string((int)analytics.memoryValues[i]) + "\n";
+            }
+        } else {
+            charts += "No memory data available for charting\n";
+        }
+        
+        charts += "\n VISION ACCURACY TREND:\n";
+        charts += "------------------------------------------------------------------\n";
+        
+        if (!analytics.visionConfidence.empty()) {
+            for (size_t i = 0; i < std::min(analytics.visionConfidence.size(), (size_t)15); ++i) {
+                int accuracy = (int)(analytics.visionConfidence[i] * 100);
+                int barLength = accuracy / 2;
+                
+                charts += "Detection " + std::to_string(i + 1) + ": ";
+                for (int j = 0; j < barLength; ++j) {
+                    charts += "█";
+                }
+                charts += " " + std::to_string(accuracy) + "%\n";
+            }
+        } else {
+            charts += "No vision data available for charting\n";
+        }
+        
+        charts += "\n PERFORMANCE SUMMARY:\n";
+        charts += "------------------------------------------------------------------\n";
+        charts += "- Memory Stability: " + std::to_string((int)analytics.averageMemoryStability) + "%\n";
+        charts += "- Vision Accuracy: " + std::to_string((int)analytics.averageVisionAccuracy) + "%\n";
+        charts += "- Total Samples: " + std::to_string(analytics.memoryValues.size() + analytics.visionConfidence.size()) + "\n";
+        charts += "- Analysis Runs: " + std::to_string(analytics.totalAnalysisRuns) + "\n";
+        
+        showInfo("Real-time Performance Charts", charts.c_str());
+        setStatus("Real-time charts generated - %zu memory samples, %zu vision samples", 
+                 analytics.memoryValues.size(), analytics.visionConfidence.size());
+    }
+    
+    void showPerformanceMonitor() {
+        if (!selectedProcess) {
+            showWarning("No Process Selected", "Please select a process from the list before opening performance monitor.");
+            return;
+        }
+        
+        setStatus("Initializing performance monitor...");
+        
+        // Create performance monitoring dashboard
+        std::string monitor = " REAL-TIME PERFORMANCE MONITOR \n";
+        monitor += "===========================================================\n\n";
+        
+        monitor += " TARGET: " + selectedProcess->name + " (PID: " + std::to_string(selectedProcess->pid) + ")\n\n";
+        
+        monitor += " CURRENT STATUS:\n";
+        monitor += "------------------------------------------------------------------\n";
+        
+        // Memory monitoring status
+        monitor += " MEMORY ANALYSIS:\n";
+        monitor += "- Monitored Addresses: " + std::to_string(memoryAddresses.size()) + "\n";
+        monitor += "- Discovered Addresses: " + std::to_string(discoveredAddresses.size()) + "\n";
+        monitor += "- Memory Regions: " + std::to_string(memoryRegions.size()) + "\n";
+        if (analytics.totalAnalysisRuns > 0) {
+            monitor += "- Stability Score: " + std::to_string((int)analytics.averageMemoryStability) + "%\n";
+        }
+        
+        // Vision monitoring status
+        monitor += "\n VISION ANALYSIS:\n";
+        monitor += "- Captured Frames: " + (lastFrameData.empty() ? "None" : std::to_string(frameWidth) + "x" + std::to_string(frameHeight)) + "\n";
+        monitor += "- Detected Text Regions: " + std::to_string(detectedTexts.size()) + "\n";
+        if (analytics.totalAnalysisRuns > 0) {
+            monitor += "- Accuracy Score: " + std::to_string((int)analytics.averageVisionAccuracy) + "%\n";
+        }
+        
+        // Hybrid analysis status
+        monitor += "\n🔗 HYBRID ANALYSIS:\n";
+        monitor += "- Analysis Runs: " + std::to_string(analytics.totalAnalysisRuns) + "\n";
+        monitor += "- Data Correlations: " + std::to_string(analytics.valueChangeCounts.size()) + "\n";
+        monitor += "- Trend Analysis: " + std::to_string(analytics.valueTrends.size()) + " metrics\n";
+        
+        // System performance
+        monitor += "\n⚡ SYSTEM PERFORMANCE:\n";
+        monitor += "- Process Monitoring: " + std::string(monitoring ? "🟢 ACTIVE" : "🔴 INACTIVE") + "\n";
+        monitor += "- Memory Scanning: " + std::string(scanning ? "🟡 IN PROGRESS" : "🟢 READY") + "\n";
+        monitor += "- Vision Analysis: " + std::string(visionAnalyzing ? "🟡 IN PROGRESS" : "🟢 READY") + "\n";
+        
+        // Recommendations
+        monitor += "\n PERFORMANCE RECOMMENDATIONS:\n";
+        monitor += "------------------------------------------------------------------\n";
+        
+        if (memoryAddresses.empty() && discoveredAddresses.empty()) {
+            monitor += "WARNING: No memory data - Run 'Scan Process Memory' or 'Scan Game Data'\n";
+        }
+        if (detectedTexts.empty()) {
+            monitor += "WARNING: No vision data - Run 'Capture Screen' and 'Start Vision Analysis'\n";
+        }
+        if (analytics.totalAnalysisRuns == 0) {
+            monitor += "WARNING: No analytics data - Run 'Start Analytics' for performance metrics\n";
+        }
+        
+        if (!memoryAddresses.empty() && !detectedTexts.empty() && analytics.totalAnalysisRuns > 0) {
+            monitor += "✅ All systems operational - Professional analysis ready\n";
+            monitor += " Run 'Hybrid Analysis' for comprehensive game insights\n";
+        }
+        
+        showInfo("Performance Monitor", monitor.c_str());
+        setStatus("Performance monitor displayed - System status overview complete");
+    }
+    
+    void showAboutDialog() {
+        PopupDialogs::showAboutDialog(this);
+    }
+    
+    void toggleDarkMode() {
+        modernThemeEnabled = !modernThemeEnabled;
+        SendMessage(hDarkModeToggle, BM_SETCHECK, modernThemeEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+        
+        // Update theme brushes
+        updateThemeBrushes();
+        
+        // Refresh the window to apply dark mode
+        InvalidateRect(hwnd, nullptr, TRUE);
+        UpdateWindow(hwnd);
+        
+        setStatus("Dark mode %s", modernThemeEnabled ? "enabled" : "disabled");
+    }
+    
+    void toggleSystemProcesses() {
+        showSystemProcesses = !showSystemProcesses;
+        SendMessage(hSystemProcessesToggle, BM_SETCHECK, showSystemProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
+        
+        // Refresh process list
+        refreshProcesses();
+        refreshProcessList();
+        
+        setStatus("System processes %s", showSystemProcesses ? "enabled" : "disabled");
+    }
+    
+    void showSettingsDialog() {
+        PopupDialogs::showSettingsDialog(this);
+    }
+    
+    void showHelpDialog() {
+        PopupDialogs::showHelpDialog(this);
     }
     
     void scanGameData() {
         if (!selectedProcess) {
-            SetWindowText(hStatusLabel, "Please select a process first");
+            showWarning("No Process Selected", "Please select a process from the list before scanning for game data.");
             return;
         }
         
         if (scanning) {
-            SetWindowText(hStatusLabel, "Memory scan already in progress...");
+            showWarning("Scan In Progress", "Memory scan is already in progress. Please wait for it to complete.");
             return;
         }
         
         scanning = true;
         SetWindowText(hScanGameDataButton, "Scanning...");
         EnableWindow(hScanGameDataButton, FALSE);
-        SetWindowText(hStatusLabel, "Scanning for game data (focused scan)...");
+        showProgress(true);
+        resetProgress();
+        setStatus("Initializing game data scan...");
         
         // Clear previous results
         SendMessage(hAddressListBox, LB_RESETCONTENT, 0, 0);
@@ -1002,38 +2943,47 @@ public:
         std::thread([this]() {
             try {
                 // Step 1: Get memory regions
-                SetWindowText(hStatusLabel, "Discovering memory regions...");
+                setStatus("Discovering memory regions...");
+                setProgress(15);
                 memoryRegions = MemoryScanner::scanProcessMemory(selectedProcess->pid);
                 
                 if (memoryRegions.empty()) {
-                    SetWindowText(hStatusLabel, "No readable memory regions found");
+                    showError("No Memory Regions", "No readable memory regions found in the selected process. The process may be protected or not have accessible memory.");
                     goto cleanup;
                 }
                 
-                char status[200];
-                sprintf(status, "Found %zu memory regions, scanning for game data...", memoryRegions.size());
-                SetWindowText(hStatusLabel, status);
+                setStatus("Found %zu memory regions, analyzing for game data patterns...", memoryRegions.size());
+                setProgress(40);
                 
                 // Step 2: Find game data addresses (more focused scan)
                 discoveredAddresses = MemoryScanner::findGameDataAddresses(selectedProcess->pid, memoryRegions, 200);
+                setProgress(80);
                 
                 // Initialize checkbox state
                 addressChecked.resize(discoveredAddresses.size(), false);
                 
                 // Step 3: Populate the address list using filter method
                 filterAddressList();
+                setProgress(95);
                 
-                sprintf(status, "Game data scan complete! Found %zu addresses. Try Compare Values now!", discoveredAddresses.size());
-                SetWindowText(hStatusLabel, status);
+                setStatus("Game data scan complete! Found %zu potential game variables", discoveredAddresses.size());
+                setProgress(100);
+                
+                if (discoveredAddresses.empty()) {
+                    showWarning("No Game Data Found", "No potential game data was found. Try running as Administrator or use 'Scan Process Memory' for a broader search.");
+                } else {
+                    showInfo("Game Data Scan Complete", "Found potential game variables! Use 'Compare Values' to capture baseline, then interact with the game and click 'Show Changed Values'.");
+                }
                 
             } catch (const std::exception& e) {
-                SetWindowText(hStatusLabel, "Error during game data scan");
+                showError("Scan Error", "An error occurred during game data scanning. Please try again or run as Administrator.");
             }
             
         cleanup:
             scanning = false;
             SetWindowText(hScanGameDataButton, "Scan Game Data");
             EnableWindow(hScanGameDataButton, TRUE);
+            showProgress(false);
         }).detach();
     }
     
@@ -1050,6 +3000,60 @@ public:
         
         if (pThis) {
             switch (uMsg) {
+                case WM_CTLCOLORSTATIC:
+                case WM_CTLCOLOREDIT:
+                case WM_CTLCOLORLISTBOX:
+                    {
+                        HDC hdc = (HDC)wParam;
+                        if (pThis->modernThemeEnabled) {
+                            SetBkColor(hdc, ModernTheme::DARK_BACKGROUND_PRIMARY);
+                            SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
+                            return (LRESULT)pThis->hBackgroundBrush;
+                        } else {
+                            SetBkColor(hdc, ModernTheme::BACKGROUND_PRIMARY);
+                            SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
+                            return (LRESULT)pThis->hBackgroundBrush;
+                        }
+                    }
+                    break;
+                case WM_CTLCOLORBTN:
+                    {
+                        HDC hdc = (HDC)wParam;
+                        if (pThis->modernThemeEnabled) {
+                            SetBkColor(hdc, ModernTheme::DARK_BUTTON_NORMAL);
+                            SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
+                            return (LRESULT)pThis->hCardBrush;
+                        } else {
+                            SetBkColor(hdc, ModernTheme::BUTTON_NORMAL);
+                            SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
+                            return (LRESULT)pThis->hCardBrush;
+                        }
+                    }
+                    break;
+                case WM_DRAWITEM:
+                    {
+                        LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
+                        if (lpDrawItem->CtlType == ODT_BUTTON) {
+                            pThis->drawModernButton(lpDrawItem);
+                            return TRUE;
+                        }
+                    }
+                    break;
+                case WM_PAINT:
+                    {
+                        PAINTSTRUCT ps;
+                        HDC hdc = BeginPaint(hwnd, &ps);
+                        RECT rect;
+                        GetClientRect(hwnd, &rect);
+                        if (pThis->modernThemeEnabled) {
+                            FillRect(hdc, &rect, pThis->hBackgroundBrush);
+                        } else {
+                            FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+                        }
+                        EndPaint(hwnd, &ps);
+                        return 0;
+                    }
+                    break;
                 case WM_COMMAND:
                     if (HIWORD(wParam) == BN_CLICKED) {
                         pThis->onButtonClick(LOWORD(wParam));

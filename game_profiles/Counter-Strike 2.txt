@@ -1,0 +1,15 @@
+# Game: Counter-Strike 2
+# Version: Latest
+# Last Updated: 2025-01-14
+# Description: Popular FPS game - health, armor, money, ammo tracking
+
+Health=0x12345678
+Armor=0x1234567C
+Money=0x12345680
+Primary_Ammo=0x12345684
+Secondary_Ammo=0x12345688
+Grenades=0x1234568C
+Score=0x12345690
+Deaths=0x12345694
+Kills=0x12345698
+

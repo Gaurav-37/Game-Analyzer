@@ -1,0 +1,18 @@
+# Game: Dwarf Fortress
+# Version: Steam Edition
+# Last Updated: 2025-01-14
+# Description: Complex simulation game - population, resources, happiness
+
+Population=0x34567890
+Food=0x34567894
+Drinks=0x34567898
+Wood=0x3456789C
+Stone=0x345678A0
+Metal=0x345678A4
+Gems=0x345678A8
+Cloth=0x345678AC
+Leather=0x345678B0
+Happiness=0x345678B4
+Wealth=0x345678B8
+Year=0x345678BC
+

@@ -1,0 +1,18 @@
+# Game: Planescape: Torment Enhanced Edition
+# Version: Enhanced Edition
+# Last Updated: 2025-01-14
+# Description: Classic RPG - health, stats, experience, inventory
+
+Health=0x45678901
+Max_Health=0x45678905
+Experience=0x45678909
+Level=0x4567890D
+Strength=0x45678911
+Intelligence=0x45678915
+Wisdom=0x45678919
+Dexterity=0x4567891D
+Constitution=0x45678921
+Charisma=0x45678925
+Gold=0x45678929
+AC=0x4567892D
+
