@@ -11,6 +11,8 @@
 #include <memory>
 #include <future>
 #include <chrono>
+#include <map>
+#include "ui_framework.h"
 
 // Advanced Thread Manager with Thread Pools
 class ThreadManager {
@@ -79,7 +81,7 @@ private:
     
     // Statistics
     std::map<std::string, ThreadStatistics> poolStatistics;
-    std::mutex statisticsMutex;
+    mutable std::mutex statisticsMutex;
     
     // Configuration
     int defaultMaxThreads;
@@ -151,6 +153,11 @@ private:
 // Smart Pointer-based Dialog Manager
 class SmartDialogManager {
 public:
+    SmartDialogManager() = default;
+    SmartDialogManager(const SmartDialogManager&) = delete;
+    SmartDialogManager& operator=(const SmartDialogManager&) = delete;
+    SmartDialogManager(SmartDialogManager&& other) noexcept;
+    SmartDialogManager& operator=(SmartDialogManager&& other) noexcept;
     struct DialogInfo {
         std::string title;
         std::string content;
@@ -165,7 +172,7 @@ public:
 private:
     // Smart pointer management
     std::vector<std::unique_ptr<class ModernDialog>> activeDialogs;
-    std::mutex dialogMutex;
+    mutable std::mutex dialogMutex;
     
     // Dialog factory
     std::function<std::unique_ptr<class ModernDialog>(const DialogInfo&)> dialogFactory;
@@ -175,7 +182,6 @@ private:
     std::atomic<int> activeDialogCount;
     
 public:
-    SmartDialogManager();
     ~SmartDialogManager();
     
     // Dialog management

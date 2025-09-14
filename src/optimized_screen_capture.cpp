@@ -14,9 +14,10 @@ OptimizedScreenCapture::OptimizedScreenCapture()
       totalFrames(0), droppedFrames(0), averageCaptureTime(0.0),
       averageProcessingTime(0.0) {
     
-    gpuFrame = cv::makePtr<cv::cuda::GpuMat>();
-    gpuPreviousFrame = cv::makePtr<cv::cuda::GpuMat>();
-    gpuDiff = cv::makePtr<cv::cuda::GpuMat>();
+    // Initialize GPU matrices (CPU fallback)
+    gpuFrame = cv::cuda::GpuMat();
+    gpuPreviousFrame = cv::cuda::GpuMat();
+    gpuDiff = cv::cuda::GpuMat();
 }
 
 OptimizedScreenCapture::~OptimizedScreenCapture() {
@@ -124,7 +125,9 @@ bool OptimizedScreenCapture::initializeDirectX() {
     }
     
     // Get DXGI output
-    hr = dxgiAdapter->EnumOutputs(0, &dxgiOutput);
+    IDXGIOutput* tempOutput;
+    hr = dxgiAdapter->EnumOutputs(0, &tempOutput);
+    dxgiOutput = static_cast<IDXGIOutput1*>(tempOutput);
     dxgiAdapter->Release();
     if (FAILED(hr)) {
         handleDirectXError(hr, "EnumOutputs");
@@ -205,7 +208,7 @@ bool OptimizedScreenCapture::captureFrame(FrameData& frameData) {
             success = captureWindow(targetWindow.hwnd, frameData);
             break;
         case CaptureMode::REGION_BASED:
-            success = captureRegions(captureRegions, frameData);
+            success = captureRegions(captureRegionsList, frameData);
             break;
         case CaptureMode::DIFFERENTIAL:
             success = captureDifferential(frameData);
@@ -549,21 +552,21 @@ std::string OptimizedScreenCapture::getProcessName(HWND hwnd) {
 }
 
 void OptimizedScreenCapture::addCaptureRegion(const CaptureRegion& region) {
-    captureRegions.push_back(region);
+    captureRegionsList.push_back(region);
 }
 
 void OptimizedScreenCapture::removeCaptureRegion(const std::string& name) {
-    captureRegions.erase(
-        std::remove_if(captureRegions.begin(), captureRegions.end(),
+    captureRegionsList.erase(
+        std::remove_if(captureRegionsList.begin(), captureRegionsList.end(),
             [&name](const CaptureRegion& region) {
                 return region.name == name;
             }),
-        captureRegions.end()
+        captureRegionsList.end()
     );
 }
 
 void OptimizedScreenCapture::updateCaptureRegion(const std::string& name, const RECT& newRect) {
-    for (auto& region : captureRegions) {
+    for (auto& region : captureRegionsList) {
         if (region.name == name) {
             region.rect = newRect;
             break;
@@ -572,7 +575,7 @@ void OptimizedScreenCapture::updateCaptureRegion(const std::string& name, const 
 }
 
 void OptimizedScreenCapture::setRegionPriority(const std::string& name, int priority) {
-    for (auto& region : captureRegions) {
+    for (auto& region : captureRegionsList) {
         if (region.name == name) {
             region.priority = priority;
             break;
@@ -581,7 +584,7 @@ void OptimizedScreenCapture::setRegionPriority(const std::string& name, int prio
 }
 
 void OptimizedScreenCapture::enableRegion(const std::string& name, bool enable) {
-    for (auto& region : captureRegions) {
+    for (auto& region : captureRegionsList) {
         if (region.name == name) {
             region.enabled = enable;
             break;

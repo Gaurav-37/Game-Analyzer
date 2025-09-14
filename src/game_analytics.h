@@ -2,7 +2,7 @@
 
 #include <windows.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/cuda.hpp>
+// CUDA support disabled for compatibility
 #include <string>
 #include <vector>
 #include <map>
@@ -66,11 +66,11 @@ private:
     std::vector<GameEvent> detectedEvents;
     std::map<EventType, std::vector<VisualCue>> eventCues;
     
-    // Optical flow for screen shake detection
-    cv::Ptr<cv::cuda::GpuMat> gpuPrevFrame;
-    cv::Ptr<cv::cuda::GpuMat> gpuCurrentFrame;
-    cv::Ptr<cv::cuda::GpuMat> gpuFlow;
-    cv::Ptr<cv::cuda::OpticalFlowDual_TVL1> opticalFlow;
+    // Optical flow for screen shake detection (CPU fallback)
+    cv::Mat prevFrame;
+    cv::Mat currentFrame;
+    cv::Mat flow;
+    cv::Ptr<cv::FarnebackOpticalFlow> opticalFlow;
     
     // Color detection for UI elements
     std::map<std::string, cv::Scalar> gameColors;
@@ -137,6 +137,9 @@ private:
     // Event validation
     bool validateEvent(const GameEvent& event, const cv::Mat& frame);
     void updateEventConfidence(GameEvent& event, const cv::Mat& frame);
+    
+    // Helper functions
+    void loadDefaultVisualCues();
 };
 
 // Game Fingerprinting System
@@ -173,8 +176,8 @@ private:
     std::map<std::string, GameProfile> windowTitleMap;
     std::map<std::string, GameProfile> hashMap;
     
-    // Template matching
-    cv::Ptr<cv::cuda::TemplateMatching> templateMatcher;
+    // Template matching (CPU fallback)
+    cv::Mat templateMatcher;
     
     // Color analysis
     std::map<std::string, std::vector<cv::Scalar>> gameColorPalettes;
@@ -241,6 +244,12 @@ private:
     // Hash calculation
     std::string calculateMD5Hash(const std::string& data);
     std::string calculateFileHash(const std::string& filePath);
+    
+    // Helper functions
+    GameProfile getProfileByProcessName(const std::string& processName);
+    GameProfile getProfileByWindowTitle(const std::string& windowTitle);
+    std::string getProcessNameFromHWND(HWND hwnd);
+    std::string getWindowTitleFromHWND(HWND hwnd);
 };
 
 // Bloomberg-Style Analytics Engine
@@ -383,4 +392,11 @@ private:
     // Utility functions
     std::vector<double> getRecentData(int count);
     void updatePerformanceTracking(double calculationTime);
+    
+    // Helper functions
+    double calculateConsistencyIndex();
+    double calculateImprovementIndex();
+    double calculateStabilityIndex();
+    double calculateSimpleAverage(const std::vector<double>& data);
+    double calculateCorrelation(const std::vector<double>& x, const std::vector<double>& y);
 };

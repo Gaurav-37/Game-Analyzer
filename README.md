@@ -1,33 +1,32 @@
-# Game Analyzer
+# Game Analyzer - Bloomberg Terminal
 
-A professional-grade Windows application for memory analysis and monitoring in games and applications. Features advanced memory scanning, value change detection, and automated workflow tools.
+Professional gaming analytics platform with real-time computer vision, advanced OCR, and financial-style metrics for competitive gaming analysis.
 
-## Features
+## Core Features
 
-### 🔍 **Advanced Memory Scanning**
-- **Process Memory Discovery**: Automatically scan and discover readable memory regions
-- **Game Data Detection**: Smart filtering to find likely game variables (health, score, etc.)
-- **Memory Region Analysis**: Detailed information about memory protection and state
-- **Value Interpretation**: Automatic detection of different data types (integers, floats, ASCII)
+### 🎯 **Bloomberg Terminal Analytics**
+- **Real-time Game Metrics**: RSI, MACD, Sharpe ratio calculations for gaming performance
+- **Financial-style Dashboards**: Professional trading terminal interface adapted for gaming
+- **Performance Analytics**: Advanced statistical analysis of gaming patterns
+- **Risk Assessment**: Volatility and consistency metrics for competitive analysis
 
-### 📊 **Value Change Detection**
-- **Baseline Comparison**: Capture current memory state for comparison
-- **Change Tracking**: Automatically detect which memory values have changed
-- **Smart Filtering**: Focus on meaningful changes in game data
-- **Auto-Monitoring**: Changed addresses automatically added to monitoring list
+### 🔍 **Advanced Computer Vision**
+- **GPU-accelerated Screen Capture**: DirectX 11 high-performance capture
+- **Optical Flow Analysis**: Screen shake and motion detection
+- **Template Matching**: Game element recognition and tracking
+- **Deep Neural Networks**: AI-powered game state analysis
 
-### 🎮 **Game Profile System**
-- **Save Profiles**: Save discovered addresses for specific games
-- **Load Profiles**: Quickly reload saved configurations
-- **Profile Management**: Automatic naming based on process name
-- **Cross-Session**: Preserve your work between application restarts
+### 📊 **Advanced OCR Engine**
+- **Tesseract 5.5 Integration**: Industry-standard OCR with Leptonica preprocessing
+- **Real-time Text Recognition**: Live game text extraction and analysis
+- **Multi-language Support**: Configurable language models
+- **Frame Caching**: Optimized performance with intelligent caching
 
-### 🔧 **Professional UI/UX**
-- **Clean Interface**: Streamlined workflow without redundant controls
-- **Checkbox Selection**: Easy multi-select for discovered addresses
-- **Real-time Search**: Filter processes and addresses as you type
-- **Progress Indicators**: Visual feedback for scanning operations
-- **Large Display Areas**: Optimized for viewing many addresses
+### 🎮 **Game Event Detection**
+- **Automatic Game Fingerprinting**: Process and window title detection
+- **Event Classification**: Screen shake, text changes, UI state detection
+- **Performance Monitoring**: <50ms processing latency target
+- **Thread Pool Management**: Lock-free data structures for real-time processing
 
 ### 📈 **Data Management**
 - **Live Monitoring**: Real-time monitoring of selected memory addresses

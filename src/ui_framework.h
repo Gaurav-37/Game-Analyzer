@@ -65,12 +65,12 @@ private:
     HWND cancelButton;
     RealGameAnalyzerGUI* parent;
     bool isDarkMode;
-    std::string title;
     std::string content;
     int width, height;
     bool hasCancelButton;
     
 public:
+    std::string title;
     ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, const std::string& title, const std::string& content, int width = 500, int height = 300, bool showCancel = false);
     ~ModernDialog();
     void centerDialog(int width, int height);

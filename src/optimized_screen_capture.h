@@ -7,7 +7,7 @@
 #include <d3d11_1.h>
 #include <wincodec.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/cuda.hpp>
+// CUDA support disabled for compatibility
 #include <string>
 #include <vector>
 #include <memory>
@@ -79,7 +79,7 @@ private:
     // Capture configuration
     CaptureMode captureMode;
     GameWindow targetWindow;
-    std::vector<CaptureRegion> captureRegions;
+    std::vector<CaptureRegion> captureRegionsList;
     
     // Differential processing
     cv::Mat previousFrame;

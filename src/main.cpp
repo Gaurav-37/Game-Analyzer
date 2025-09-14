@@ -22,6 +22,10 @@
 #include <dwmapi.h>
 #include "ui_framework.h"
 #include "popup_dialogs.h"
+#include "advanced_ocr.h"
+#include "optimized_screen_capture.h"
+#include "game_analytics.h"
+#include "thread_manager.h"
 
 
 // Real process information structure
@@ -640,9 +644,22 @@ private:
     ProcessInfo* selectedProcess;
     bool showSystemProcesses;
     
-    // Screen capture and vision analysis
-    ScreenCapture screenCapture;
-    SimpleOCR ocrEngine;
+    // Advanced screen capture and vision analysis
+    OptimizedScreenCapture optimizedScreenCapture;
+    AdvancedOCR advancedOCR;
+    FrameCache frameCache;
+    IntelligentRegionProcessor regionProcessor;
+    
+    // Game analytics and event detection
+    GameEventDetector gameEventDetector;
+    GameFingerprinting gameFingerprinting;
+    BloombergAnalyticsEngine bloombergAnalytics;
+    
+    // Thread management
+    ThreadManager threadManager;
+    SmartDialogManager dialogManager;
+    
+    // Legacy compatibility
     std::vector<uint8_t> lastFrameData;
     int frameWidth, frameHeight;
     std::vector<std::string> detectedTexts;
@@ -1134,6 +1151,10 @@ public:
         }
         
         createControls();
+        
+        // Initialize advanced components
+        initializeAdvancedComponents();
+        
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
         
@@ -1326,6 +1347,66 @@ public:
         initializeTooltips();
         
         // No sample addresses - start with empty list
+    }
+    
+    void initializeAdvancedComponents() {
+        // Initialize thread manager
+        threadManager.initialize(8, 32);
+        
+        // Initialize advanced screen capture with GPU acceleration
+        optimizedScreenCapture.initialize(true, true);
+        optimizedScreenCapture.setCaptureMode(OptimizedScreenCapture::CaptureMode::GAME_WINDOW);
+        optimizedScreenCapture.setMaxFPS(60);
+        
+        // Initialize advanced OCR with Windows.Media.Ocr (fallback to Tesseract)
+        if (!advancedOCR.initialize(AdvancedOCR::OCRBackend::TESSERACT)) {
+            // Fallback to basic initialization
+        }
+        advancedOCR.enableCaching(true);
+        
+        // Initialize frame cache
+        frameCache.~FrameCache();
+        new(&frameCache) FrameCache(100, 5000); // 100 frames, 5 second timeout
+        
+        // Initialize intelligent region processor
+        regionProcessor = IntelligentRegionProcessor();
+        
+        // Add default processing regions for common game UI elements
+        IntelligentRegionProcessor::ProcessingRegion hudRegion;
+        hudRegion.name = "HUD";
+        hudRegion.rect = cv::Rect(0, 0, 1920, 200); // Top HUD area
+        hudRegion.fps = 30;
+        hudRegion.requiredState = IntelligentRegionProcessor::GameState::GAMEPLAY;
+        regionProcessor.addRegion(hudRegion);
+        
+        IntelligentRegionProcessor::ProcessingRegion healthRegion;
+        healthRegion.name = "Health";
+        healthRegion.rect = cv::Rect(50, 50, 200, 100); // Health bar area
+        healthRegion.fps = 10;
+        healthRegion.requiredState = IntelligentRegionProcessor::GameState::GAMEPLAY;
+        regionProcessor.addRegion(healthRegion);
+        
+        IntelligentRegionProcessor::ProcessingRegion scoreRegion;
+        scoreRegion.name = "Score";
+        scoreRegion.rect = cv::Rect(1600, 50, 300, 100); // Score area
+        scoreRegion.fps = 10;
+        scoreRegion.requiredState = IntelligentRegionProcessor::GameState::GAMEPLAY;
+        regionProcessor.addRegion(scoreRegion);
+        
+        // Initialize game event detector
+        gameEventDetector.initialize();
+        
+        // Initialize game fingerprinting
+        gameFingerprinting.initialize();
+        
+        // Initialize Bloomberg analytics engine
+        bloombergAnalytics.initialize(20, 0.1); // 20 period lookback, 0.1 smoothing
+        
+        // Initialize dialog manager
+        dialogManager.~SmartDialogManager();
+        new(&dialogManager) SmartDialogManager();
+        
+        setStatus("Advanced components initialized - Ready for professional gaming analytics");
     }
     
     bool isUserApplication(const std::string& processName) {
@@ -2101,7 +2182,7 @@ public:
         setStatus("Initializing screen capture...");
         
         // Initialize screen capture if not already done
-        if (!screenCapture.initialize()) {
+        if (!optimizedScreenCapture.initialize()) {
             showError("Capture Error", "Failed to initialize screen capture. Make sure DirectX 11 is available.");
             SetWindowText(hVisionStatusLabel, "Vision: Failed to initialize");
             return;
@@ -2110,7 +2191,8 @@ public:
         setStatus("Capturing screen frame...");
         
         // Capture a frame
-        if (screenCapture.captureFrame(lastFrameData, frameWidth, frameHeight)) {
+        OptimizedScreenCapture::FrameData frameData;
+        if (optimizedScreenCapture.captureFrame(frameData)) {
             char status[200];
             sprintf(status, "Vision: Captured %dx%d frame (%zu bytes)", frameWidth, frameHeight, lastFrameData.size());
             SetWindowText(hVisionStatusLabel, status);
@@ -2185,7 +2267,8 @@ public:
         setStatus("Processing frame data with OCR...");
         
         // Run OCR text detection
-        auto textRegions = ocrEngine.detectText(lastFrameData, frameWidth, frameHeight);
+        cv::Mat frameMat = cv::Mat(frameHeight, frameWidth, CV_8UC3, lastFrameData.data());
+        auto textRegions = advancedOCR.detectText(frameMat);
         
         // Store detected texts
         detectedTexts.clear();
