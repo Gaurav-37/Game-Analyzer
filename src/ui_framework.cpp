@@ -1,25 +1,48 @@
 #include "ui_framework.h"
 #include "main.h" // For RealGameAnalyzerGUI class
+#include <algorithm>
 
 // ModernDialog Implementation
-ModernDialog::ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, const std::string& title, const std::string& content, int width, int height) 
-    : parent(parentApp), isDarkMode(parentApp->modernThemeEnabled) {
+ModernDialog::ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, const std::string& title, const std::string& content, int width, int height, bool showCancel) 
+    : parent(parentApp), isDarkMode(parentApp ? parentApp->modernThemeEnabled : false), title(title), content(content), width(width), height(height), hasCancelButton(showCancel) {
     
-    // Create main dialog window
+    // Create main dialog window with enhanced styling (non-modal)
     dialog = CreateWindowEx(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
         "STATIC", title.c_str(),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
         CW_USEDEFAULT, CW_USEDEFAULT, width, height,
         parentWindow, nullptr, GetModuleHandle(nullptr), nullptr
     );
     
     if (!dialog) return;
     
-    // Enable dark title bar
-    if (isDarkMode) {
+    // Enable dark title bar immediately with aggressive forcing - always check current state
+    bool currentDarkMode = (parent && parent->modernThemeEnabled);
+    if (currentDarkMode) {
         BOOL darkMode = TRUE;
+        
+        // Apply dark mode multiple times to ensure it sticks
         DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        
+        // Force multiple refreshes to ensure dark mode applies
+        SetWindowPos(dialog, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        InvalidateRect(dialog, nullptr, TRUE);
+        UpdateWindow(dialog);
+        
+        // Apply dark mode again after window is fully created
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        
+        // Force title bar refresh with multiple timers
+        SetTimer(dialog, 1, 50, nullptr);   // First refresh
+        SetTimer(dialog, 2, 150, nullptr);  // Second refresh
+        SetTimer(dialog, 3, 300, nullptr);  // Final refresh
+    } else {
+        BOOL darkMode = FALSE;
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        SetWindowPos(dialog, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
     
     // Create content area with proper padding
@@ -48,8 +71,303 @@ ModernDialog::ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, co
     centerDialog(width, height);
     
     // Set up custom window procedure
-    SetWindowLongPtr(dialog, GWLP_USERDATA, (LONG_PTR)parentApp);
+    SetWindowLongPtr(dialog, GWLP_USERDATA, (LONG_PTR)this);
     SetWindowLongPtr(dialog, GWLP_WNDPROC, (LONG_PTR)modernDialogProc);
+}
+
+// Destructor
+ModernDialog::~ModernDialog() {
+    if (dialog) {
+        DestroyWindow(dialog);
+        dialog = nullptr;
+    }
+}
+
+// Enhanced dialog methods
+void ModernDialog::show() {
+    if (dialog) {
+        // Refresh theme before showing
+        refreshTheme();
+        
+        ShowWindow(dialog, SW_SHOW);
+        UpdateWindow(dialog);
+        SetForegroundWindow(dialog);
+        
+        // SIMPLE FIX: Always check parent's current theme state
+        bool isParentDarkMode = false;
+        if (parent) {
+            isParentDarkMode = parent->modernThemeEnabled;
+        }
+        
+        if (isParentDarkMode) {
+            BOOL darkMode = TRUE;
+            DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+            DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+            SetWindowPos(dialog, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            InvalidateRect(dialog, nullptr, TRUE);
+            UpdateWindow(dialog);
+            
+            // Additional timer-based refresh
+            SetTimer(dialog, 4, 200, nullptr);
+        } else {
+            BOOL darkMode = FALSE;
+            DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+            DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+            SetWindowPos(dialog, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        }
+    }
+}
+
+void ModernDialog::hide() {
+    if (dialog) {
+        ShowWindow(dialog, SW_HIDE);
+    }
+}
+
+void ModernDialog::setTitle(const std::string& newTitle) {
+    title = newTitle;
+    if (dialog) {
+        SetWindowText(dialog, title.c_str());
+    }
+}
+
+void ModernDialog::setContent(const std::string& newContent) {
+    content = newContent;
+    if (contentArea) {
+        SetWindowText(contentArea, content.c_str());
+    }
+}
+
+void ModernDialog::refreshTheme() {
+    if (!dialog || !parent) return;
+    
+    // SIMPLE FIX: Always check parent's current theme state
+    bool isParentDarkMode = parent->modernThemeEnabled;
+    
+    // Force refresh the entire dialog with current theme
+    InvalidateRect(dialog, nullptr, TRUE);
+    UpdateWindow(dialog);
+    
+    // Force title bar update
+    if (isParentDarkMode) {
+        BOOL darkMode = TRUE;
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    } else {
+        BOOL darkMode = FALSE;
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        DwmSetWindowAttribute(dialog, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    }
+    SetWindowPos(dialog, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
+// Theme updates handled during dialog creation
+
+// Enhanced dialog drawing
+void ModernDialog::drawDialogBackground(HDC hdc, RECT& rect, bool isDarkMode) {
+    // Create solid background (simplified for compatibility)
+    COLORREF bgColor = isDarkMode ? ModernTheme::DARK_BACKGROUND_PRIMARY : ModernTheme::BACKGROUND_PRIMARY;
+    
+    // Fill background
+    HBRUSH bgBrush = CreateSolidBrush(bgColor);
+    FillRect(hdc, &rect, bgBrush);
+    DeleteObject(bgBrush);
+    
+    // Draw subtle border
+    HBRUSH borderBrush = CreateSolidBrush(isDarkMode ? ModernTheme::DARK_BORDER_PRIMARY : ModernTheme::BORDER_PRIMARY);
+    FrameRect(hdc, &rect, borderBrush);
+    DeleteObject(borderBrush);
+}
+
+void ModernDialog::drawModernButton(HDC hdc, RECT& rect, const std::string& text, bool isPressed, bool isHovered, bool isDarkMode) {
+    // Determine button colors
+    COLORREF bgColor, textColor, borderColor;
+    
+    if (isPressed) {
+        bgColor = isDarkMode ? ModernTheme::DARK_BUTTON_PRESSED : ModernTheme::BUTTON_PRESSED;
+    } else if (isHovered) {
+        bgColor = isDarkMode ? ModernTheme::DARK_BUTTON_HOVER : ModernTheme::BUTTON_HOVER;
+    } else {
+        bgColor = isDarkMode ? ModernTheme::DARK_BUTTON_NORMAL : ModernTheme::BUTTON_NORMAL;
+    }
+    
+    textColor = isDarkMode ? ModernTheme::DARK_TEXT_PRIMARY : ModernTheme::TEXT_PRIMARY;
+    borderColor = isDarkMode ? ModernTheme::DARK_BORDER_PRIMARY : ModernTheme::BORDER_PRIMARY;
+    
+    // Fill button background
+    HBRUSH bgBrush = CreateSolidBrush(bgColor);
+    FillRect(hdc, &rect, bgBrush);
+    DeleteObject(bgBrush);
+    
+    // Draw border
+    HBRUSH borderBrush = CreateSolidBrush(borderColor);
+    FrameRect(hdc, &rect, borderBrush);
+    DeleteObject(borderBrush);
+    
+    // Draw text
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, textColor);
+    
+    RECT textRect = rect;
+    textRect.left += 5;
+    textRect.right -= 5;
+    
+    DrawTextA(hdc, text.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+// ModernPanel Implementation
+ModernPanel::ModernPanel(HWND parentWindow, int posX, int posY, int w, int h, const std::string& panelTitle, bool border) 
+    : x(posX), y(posY), width(w), height(h), parent(parentWindow), title(panelTitle), hasBorder(border), isDarkMode(false) {
+    
+    panel = CreateWindow(
+        "STATIC", "",
+        WS_VISIBLE | WS_CHILD | (hasBorder ? SS_SUNKEN : SS_NOTIFY),
+        x, y, width, height,
+        parent, nullptr, GetModuleHandle(nullptr), nullptr
+    );
+}
+
+HWND ModernPanel::getHandle() const {
+    return panel;
+}
+
+void ModernPanel::setBackground(HBRUSH brush) {
+    if (panel) {
+        SetClassLongPtr(panel, GCLP_HBRBACKGROUND, (LONG_PTR)brush);
+        InvalidateRect(panel, nullptr, TRUE);
+    }
+}
+
+void ModernPanel::setTitle(const std::string& newTitle) {
+    title = newTitle;
+    if (panel) {
+        SetWindowText(panel, title.c_str());
+    }
+}
+
+void ModernPanel::setDarkMode(bool darkMode) {
+    isDarkMode = darkMode;
+    InvalidateRect(panel, nullptr, TRUE);
+}
+
+void ModernPanel::drawPanel(HDC hdc, RECT& rect) {
+    COLORREF bgColor = isDarkMode ? ModernTheme::DARK_PANEL_BACKGROUND : ModernTheme::PANEL_BACKGROUND;
+    COLORREF borderColor = isDarkMode ? ModernTheme::DARK_BORDER_PRIMARY : ModernTheme::BORDER_PRIMARY;
+    
+    // Fill background
+    HBRUSH bgBrush = CreateSolidBrush(bgColor);
+    FillRect(hdc, &rect, bgBrush);
+    DeleteObject(bgBrush);
+    
+    // Draw border if enabled
+    if (hasBorder) {
+        HBRUSH borderBrush = CreateSolidBrush(borderColor);
+        FrameRect(hdc, &rect, borderBrush);
+        DeleteObject(borderBrush);
+    }
+    
+    // Draw title if present
+    if (!title.empty()) {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, isDarkMode ? ModernTheme::DARK_TEXT_PRIMARY : ModernTheme::TEXT_PRIMARY);
+        
+        RECT titleRect = rect;
+        titleRect.top += 5;
+        titleRect.bottom = titleRect.top + 20;
+        
+        DrawTextA(hdc, title.c_str(), -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
+// ModernCard Implementation
+ModernCard::ModernCard(HWND parentWindow, int posX, int posY, int w, int h, const std::string& cardTitle, const std::string& cardContent) 
+    : x(posX), y(posY), width(w), height(h), parent(parentWindow), title(cardTitle), content(cardContent), isDarkMode(false), isHovered(false) {
+    
+    card = CreateWindow(
+        "STATIC", "",
+        WS_VISIBLE | WS_CHILD | SS_NOTIFY,
+        x, y, width, height,
+        parent, nullptr, GetModuleHandle(nullptr), nullptr
+    );
+    
+    // Create title label
+    titleLabel = CreateWindow(
+        "STATIC", title.c_str(),
+        WS_VISIBLE | WS_CHILD | SS_LEFT,
+        x + 10, y + 10, width - 20, 25,
+        parent, nullptr, GetModuleHandle(nullptr), nullptr
+    );
+    
+    // Create content area
+    contentArea = CreateWindow(
+        "STATIC", content.c_str(),
+        WS_VISIBLE | WS_CHILD | SS_LEFT | SS_EDITCONTROL,
+        x + 10, y + 40, width - 20, height - 50,
+        parent, nullptr, GetModuleHandle(nullptr), nullptr
+    );
+}
+
+HWND ModernCard::getHandle() const {
+    return card;
+}
+
+void ModernCard::setTitle(const std::string& newTitle) {
+    title = newTitle;
+    if (titleLabel) {
+        SetWindowText(titleLabel, title.c_str());
+    }
+}
+
+void ModernCard::setContent(const std::string& newContent) {
+    content = newContent;
+    if (contentArea) {
+        SetWindowText(contentArea, content.c_str());
+    }
+}
+
+void ModernCard::setDarkMode(bool darkMode) {
+    isDarkMode = darkMode;
+    InvalidateRect(card, nullptr, TRUE);
+}
+
+void ModernCard::setHovered(bool hovered) {
+    isHovered = hovered;
+    InvalidateRect(card, nullptr, TRUE);
+}
+
+void ModernCard::drawCard(HDC hdc, RECT& rect) {
+    COLORREF bgColor = isDarkMode ? ModernTheme::DARK_CARD_BACKGROUND : ModernTheme::CARD_BACKGROUND;
+    COLORREF borderColor = isDarkMode ? ModernTheme::DARK_BORDER_PRIMARY : ModernTheme::BORDER_PRIMARY;
+    
+    // Add hover effect
+    if (isHovered) {
+        bgColor = isDarkMode ? 
+            RGB(GetRValue(bgColor) + 10, GetGValue(bgColor) + 10, GetBValue(bgColor) + 10) :
+            RGB(std::max(0, (int)GetRValue(bgColor) - 10), std::max(0, (int)GetGValue(bgColor) - 10), std::max(0, (int)GetBValue(bgColor) - 10));
+    }
+    
+    // Fill background
+    HBRUSH bgBrush = CreateSolidBrush(bgColor);
+    FillRect(hdc, &rect, bgBrush);
+    DeleteObject(bgBrush);
+    
+    // Draw border
+    HBRUSH borderBrush = CreateSolidBrush(borderColor);
+    FrameRect(hdc, &rect, borderBrush);
+    DeleteObject(borderBrush);
+    
+    // Draw subtle shadow effect
+    if (isHovered) {
+        RECT shadowRect = rect;
+        shadowRect.left += 2;
+        shadowRect.top += 2;
+        shadowRect.right += 2;
+        shadowRect.bottom += 2;
+        
+        HBRUSH shadowBrush = CreateSolidBrush(RGB(0, 0, 0));
+        FrameRect(hdc, &shadowRect, shadowBrush);
+        DeleteObject(shadowBrush);
+    }
 }
 
 void ModernDialog::centerDialog(int width, int height) {
@@ -60,27 +378,9 @@ void ModernDialog::centerDialog(int width, int height) {
     SetWindowPos(dialog, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE);
 }
 
-void ModernDialog::show() {
-    ShowWindow(dialog, SW_SHOW);
-    UpdateWindow(dialog);
-    
-    // Message loop
-    MSG msg;
-    while (GetMessage(&msg, nullptr, 0, 0)) {
-        if (msg.hwnd == dialog || IsChild(dialog, msg.hwnd)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        
-        if (msg.message == WM_COMMAND && LOWORD(msg.wParam) == 1) break;
-        if (msg.message == WM_CLOSE && msg.hwnd == dialog) break;
-    }
-    
-    DestroyWindow(dialog);
-}
 
 LRESULT CALLBACK ModernDialog::modernDialogProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    RealGameAnalyzerGUI* pThis = (RealGameAnalyzerGUI*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    ModernDialog* dialog = (ModernDialog*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
     
     switch (uMsg) {
         case WM_PAINT: {
@@ -89,57 +389,123 @@ LRESULT CALLBACK ModernDialog::modernDialogProc(HWND hwnd, UINT uMsg, WPARAM wPa
             RECT rect;
             GetClientRect(hwnd, &rect);
             
-            // Fill with theme-appropriate background
-            if (pThis && pThis->modernThemeEnabled) {
-                FillRect(hdc, &rect, pThis->hBackgroundBrush);
+            // SIMPLE FIX: Always check parent's current theme state
+            bool isParentDarkMode = false;
+            if (dialog && dialog->parent) {
+                isParentDarkMode = dialog->parent->modernThemeEnabled;
+            }
+            
+            if (isParentDarkMode) {
+                // Parent is in dark mode - use dark theme
+                HBRUSH darkBrush = CreateSolidBrush(ModernTheme::DARK_BACKGROUND_PRIMARY);
+                FillRect(hdc, &rect, darkBrush);
+                DeleteObject(darkBrush);
+                
+                // Dark title bar
+                BOOL darkMode = TRUE;
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
             } else {
+                // Parent is in light mode - use light theme
                 FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+                
+                // Light title bar
+                BOOL darkMode = FALSE;
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
             }
             
             EndPaint(hwnd, &ps);
             return 0;
         }
+        case WM_TIMER: {
+            if (wParam == 1 || wParam == 2 || wParam == 3 || wParam == 4) {
+                // SIMPLE FIX: Always check parent's current theme state
+                bool isParentDarkMode = false;
+                if (dialog && dialog->parent) {
+                    isParentDarkMode = dialog->parent->modernThemeEnabled;
+                }
+                
+                if (isParentDarkMode) {
+                    BOOL darkMode = TRUE;
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+                } else {
+                    BOOL darkMode = FALSE;
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+                }
+                SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                UpdateWindow(hwnd);
+                
+                // Kill the timer after use
+                KillTimer(hwnd, wParam);
+            }
+            return 0;
+        }
         case WM_CTLCOLORSTATIC: {
             HDC hdc = (HDC)wParam;
-            if (pThis && pThis->modernThemeEnabled) {
-                SetBkColor(hdc, ModernTheme::DARK_BACKGROUND_PRIMARY);
+            
+            // SIMPLE FIX: Always check parent's current theme state
+            bool isParentDarkMode = false;
+            if (dialog && dialog->parent) {
+                isParentDarkMode = dialog->parent->modernThemeEnabled;
+            }
+            
+            if (isParentDarkMode) {
+                // Parent is in dark mode - use dark theme
+                SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
-                return (LRESULT)pThis->hBackgroundBrush;
+                HBRUSH darkBrush = CreateSolidBrush(ModernTheme::DARK_BACKGROUND_PRIMARY);
+                return (LRESULT)darkBrush;
             } else {
-                SetBkColor(hdc, ModernTheme::BACKGROUND_PRIMARY);
+                // Parent is in light mode - use light theme
+                SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
-                return (LRESULT)pThis->hBackgroundBrush;
+                HBRUSH lightBrush = CreateSolidBrush(ModernTheme::BACKGROUND_PRIMARY);
+                return (LRESULT)lightBrush;
             }
         }
         case WM_CTLCOLORBTN: {
             HDC hdc = (HDC)wParam;
-            if (pThis && pThis->modernThemeEnabled) {
+            if (dialog && dialog->parent && dialog->parent->modernThemeEnabled) {
+                // Dark theme
                 SetBkColor(hdc, ModernTheme::DARK_BUTTON_NORMAL);
                 SetTextColor(hdc, ModernTheme::DARK_TEXT_PRIMARY);
-                return (LRESULT)pThis->hCardBrush;
+                HBRUSH darkBrush = CreateSolidBrush(ModernTheme::DARK_BUTTON_NORMAL);
+                return (LRESULT)darkBrush;
             } else {
+                // Light theme
                 SetBkColor(hdc, ModernTheme::BUTTON_NORMAL);
                 SetTextColor(hdc, ModernTheme::TEXT_PRIMARY);
-                return (LRESULT)pThis->hCardBrush;
+                HBRUSH lightBrush = CreateSolidBrush(ModernTheme::BUTTON_NORMAL);
+                return (LRESULT)lightBrush;
             }
         }
         case WM_DRAWITEM: {
             LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
-            if (lpDrawItem->CtlType == ODT_BUTTON && pThis) {
-                ModernUI::drawModernButton(pThis, lpDrawItem);
-                return TRUE;
+            if (lpDrawItem->CtlType == ODT_BUTTON && dialog && dialog->parent) {
+                bool isDarkMode = dialog->parent->modernThemeEnabled;
+                std::string buttonText = "OK";
+                if (lpDrawItem->CtlID == IDCANCEL) buttonText = "Cancel";
+                
+                drawModernButton(lpDrawItem->hDC, lpDrawItem->rcItem, buttonText, 
+                    lpDrawItem->itemState & ODS_SELECTED,
+                    lpDrawItem->itemState & ODS_HOTLIGHT,
+                    isDarkMode);
             }
-            break;
+            return TRUE;
         }
         case WM_COMMAND: {
-            if (LOWORD(wParam) == 1) {
-                PostMessage(hwnd, WM_CLOSE, 0, 0);
+            if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+                // Just hide the dialog, don't destroy it
+                ShowWindow(hwnd, SW_HIDE);
                 return 0;
             }
             break;
         }
         case WM_CLOSE: {
-            DestroyWindow(hwnd);
+            // Just hide the dialog, don't destroy it
+            ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
     }
@@ -200,25 +566,6 @@ void ModernLabel::setText(const std::string& newText) {
     SetWindowText(label, text.c_str()); 
 }
 
-// ModernPanel Implementation
-ModernPanel::ModernPanel(HWND parentWindow, int posX, int posY, int w, int h) 
-    : parent(parentWindow), x(posX), y(posY), width(w), height(h) {
-    
-    panel = CreateWindow(
-        "STATIC", "",
-        WS_VISIBLE | WS_CHILD,
-        x, y, width, height,
-        parent, nullptr, GetModuleHandle(nullptr), nullptr
-    );
-}
-
-HWND ModernPanel::getHandle() const { 
-    return panel; 
-}
-
-void ModernPanel::setBackground(HBRUSH brush) {
-    // Implementation for setting panel background
-}
 
 // ModernUI Utility Functions
 namespace ModernUI {

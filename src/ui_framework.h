@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <string>
+#include <vector>
 #include <dwmapi.h>
 
 // Forward declaration
@@ -61,14 +62,26 @@ private:
     HWND dialog;
     HWND contentArea;
     HWND okButton;
+    HWND cancelButton;
     RealGameAnalyzerGUI* parent;
     bool isDarkMode;
+    std::string title;
+    std::string content;
+    int width, height;
+    bool hasCancelButton;
     
 public:
-    ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, const std::string& title, const std::string& content, int width = 500, int height = 300);
+    ModernDialog(HWND parentWindow, RealGameAnalyzerGUI* parentApp, const std::string& title, const std::string& content, int width = 500, int height = 300, bool showCancel = false);
+    ~ModernDialog();
     void centerDialog(int width, int height);
     void show();
+    void hide();
+    void setTitle(const std::string& newTitle);
+    void setContent(const std::string& newContent);
+    void refreshTheme();
     static LRESULT CALLBACK modernDialogProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    static void drawDialogBackground(HDC hdc, RECT& rect, bool isDarkMode);
+    static void drawModernButton(HDC hdc, RECT& rect, const std::string& text, bool isPressed, bool isHovered, bool isDarkMode);
 };
 
 class ModernButton {
@@ -105,11 +118,56 @@ private:
     HWND panel;
     int x, y, width, height;
     HWND parent;
+    std::string title;
+    bool hasBorder;
+    bool isDarkMode;
     
 public:
-    ModernPanel(HWND parentWindow, int posX, int posY, int w, int h);
+    ModernPanel(HWND parentWindow, int posX, int posY, int w, int h, const std::string& panelTitle = "", bool border = true);
     HWND getHandle() const;
     void setBackground(HBRUSH brush);
+    void setTitle(const std::string& newTitle);
+    void setDarkMode(bool darkMode);
+    void drawPanel(HDC hdc, RECT& rect);
+};
+
+class ModernCard {
+private:
+    HWND card;
+    HWND titleLabel;
+    HWND contentArea;
+    int x, y, width, height;
+    HWND parent;
+    std::string title;
+    std::string content;
+    bool isDarkMode;
+    bool isHovered;
+    
+public:
+    ModernCard(HWND parentWindow, int posX, int posY, int w, int h, const std::string& cardTitle, const std::string& cardContent = "");
+    HWND getHandle() const;
+    void setTitle(const std::string& newTitle);
+    void setContent(const std::string& newContent);
+    void setDarkMode(bool darkMode);
+    void setHovered(bool hovered);
+    void drawCard(HDC hdc, RECT& rect);
+};
+
+class ModernRibbon {
+private:
+    HWND ribbon;
+    std::vector<HWND> buttons;
+    std::vector<std::string> buttonTexts;
+    int x, y, width, height;
+    HWND parent;
+    bool isDarkMode;
+    
+public:
+    ModernRibbon(HWND parentWindow, int posX, int posY, int w, int h);
+    void addButton(const std::string& text, HMENU id);
+    void setDarkMode(bool darkMode);
+    void drawRibbon(HDC hdc, RECT& rect);
+    HWND getHandle() const;
 };
 
 // Utility functions for modern UI
@@ -118,4 +176,27 @@ namespace ModernUI {
     void applyModernTheme(HWND window, RealGameAnalyzerGUI* parent);
     void createModernFonts(HFONT& modernFont, HFONT& boldFont, HFONT& headerFont);
     void updateThemeBrushes(RealGameAnalyzerGUI* parent);
+    
+    // Enhanced dialog utilities
+    void drawDialogShadow(HDC hdc, RECT& rect, bool isDarkMode);
+    void drawGradientBackground(HDC hdc, RECT& rect, COLORREF startColor, COLORREF endColor, bool isVertical = true);
+    void drawRoundedRectangle(HDC hdc, RECT& rect, int radius, COLORREF fillColor, COLORREF borderColor = 0);
+    void drawTextWithShadow(HDC hdc, const std::string& text, RECT& rect, UINT format, COLORREF textColor, COLORREF shadowColor);
+    
+    // Animation utilities
+    void fadeInWindow(HWND hwnd, int duration = 200);
+    void fadeOutWindow(HWND hwnd, int duration = 200);
+    void slideInWindow(HWND hwnd, int direction = 0); // 0=from top, 1=from bottom, 2=from left, 3=from right
+    
+    // Component utilities
+    void createModernLayout(HWND parent, RealGameAnalyzerGUI* app);
+    void updateComponentThemes(HWND parent, RealGameAnalyzerGUI* app);
+    void drawComponentBackground(HDC hdc, RECT& rect, const std::string& componentType, bool isDarkMode);
+    
+    // UX Consistency utilities
+    void applyConsistentSpacing(HWND parent, int margin = 10, int padding = 8);
+    void applyConsistentTypography(HWND parent, RealGameAnalyzerGUI* app);
+    void applyConsistentColors(HWND parent, RealGameAnalyzerGUI* app);
+    void enhanceAccessibility(HWND parent);
+    void createVisualHierarchy(HWND parent, RealGameAnalyzerGUI* app);
 }

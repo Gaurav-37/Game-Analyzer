@@ -21,7 +21,7 @@ if %errorlevel% neq 0 (
 echo [1/4] Checking dependencies...
 
 echo [2/4] Building final Game Analyzer...
-g++ -std=c++17 -O2 -mwindows src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp -o GameAnalyzer.exe -lgdi32 -luser32 -lkernel32 -lpsapi -lcomctl32 -ld3d11 -ldxgi -lole32 -ldwmapi
+g++ -std=c++17 -O2 -mwindows src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp -o GameAnalyzer.exe -lgdi32 -luser32 -lkernel32 -lpsapi -lcomctl32 -ld3d11 -ldxgi -lole32 -ldwmapi -lmsimg32
 
 if %errorlevel% neq 0 (
     echo [2/4] Build failed!

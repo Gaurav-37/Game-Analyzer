@@ -2890,12 +2890,14 @@ public:
         // Update theme brushes
         updateThemeBrushes();
         
+        // Note: Dialog theme updates handled in dialog creation
+        
         // Refresh the window to apply dark mode
         InvalidateRect(hwnd, nullptr, TRUE);
         UpdateWindow(hwnd);
-        
-        setStatus("Dark mode %s", modernThemeEnabled ? "enabled" : "disabled");
     }
+    
+    // Dialog theme updates are handled during dialog creation
     
     void toggleSystemProcesses() {
         showSystemProcesses = !showSystemProcesses;

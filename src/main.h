@@ -7,6 +7,8 @@
 #include "ui_framework.h"
 
 // Forward declarations
+class ModernDialog;
+
 struct ProcessInfo {
     std::string name;
     DWORD pid;
@@ -121,6 +123,8 @@ public:
     HBRUSH hButtonHoverBrush;
     HBRUSH hButtonPressedBrush;
     HBRUSH hBorderBrush;
+    
+    // Dialog theme handled during creation
     
     // Control handles
     HWND hRibbonPanel;

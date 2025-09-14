@@ -6,25 +6,28 @@
 // Main dialog functions
 void PopupDialogs::showAboutDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatAboutContent();
-    ModernDialog dialog(parent->hwnd, parent, "About Game Analyzer", content, 600, 500);
-    dialog.show();
+    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "About Game Analyzer", content, 600, 500);
+    // Dialog will use parent's theme state
+    dialog->show();
 }
 
 void PopupDialogs::showSettingsDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatSettingsContent(parent);
-    ModernDialog dialog(parent->hwnd, parent, "Settings", content, 450, 300);
-    dialog.show();
+    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "Settings", content, 450, 300);
+    // Dialog will use parent's theme state
+    dialog->show();
 }
 
 void PopupDialogs::showHelpDialog(RealGameAnalyzerGUI* parent) {
     std::string content = formatHelpContent();
-    ModernDialog dialog(parent->hwnd, parent, "Help & Guide", content, 700, 600);
-    dialog.show();
+    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, "Help & Guide", content, 700, 600);
+    // Dialog will use parent's theme state
+    dialog->show();
 }
 
 void PopupDialogs::showErrorDialog(RealGameAnalyzerGUI* parent, const std::string& title, const std::string& message) {
-    ModernDialog dialog(parent->hwnd, parent, title, message, 400, 200);
-    dialog.show();
+    ModernDialog* dialog = new ModernDialog(parent->hwnd, parent, title, message, 400, 200);
+    dialog->show();
     parent->setStatus("Error: %s", message.c_str());
 }
 
