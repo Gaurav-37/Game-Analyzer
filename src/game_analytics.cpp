@@ -1,5 +1,6 @@
 #include "game_analytics.h"
 #include "cuda_support.h"
+#include "performance_monitor.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -54,6 +55,7 @@ void GameEventDetector::cleanup() {
 }
 
 std::vector<GameEventDetector::GameEvent> GameEventDetector::detectEvents(const cv::Mat& frame) {
+    TIMED_OPERATION("Game Event Detection");
     std::lock_guard<std::mutex> lock(detectionMutex);
     
     auto startTime = std::chrono::high_resolution_clock::now();

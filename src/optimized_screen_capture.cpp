@@ -1,4 +1,5 @@
 #include "optimized_screen_capture.h"
+#include "performance_monitor.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -192,6 +193,8 @@ bool OptimizedScreenCapture::createSharedTexture(int width, int height) {
 }
 
 bool OptimizedScreenCapture::captureFrame(FrameData& frameData) {
+    TIMED_OPERATION("Frame Capture");
+    
     if (!shouldCaptureFrame()) {
         droppedFrames++;
         return false;
@@ -639,8 +642,74 @@ void OptimizedScreenCapture::limitFPS() {
 }
 
 void OptimizedScreenCapture::handleDirectXError(HRESULT hr, const std::string& operation) {
-    // Log DirectX errors (simplified implementation)
-    // In a real implementation, you'd want proper logging
+    std::string errorMessage = "DirectX Error in " + operation + ": ";
+    
+    switch (hr) {
+        case DXGI_ERROR_DEVICE_REMOVED:
+            errorMessage += "Device removed";
+            break;
+        case DXGI_ERROR_DEVICE_RESET:
+            errorMessage += "Device reset";
+            break;
+        case DXGI_ERROR_DEVICE_HUNG:
+            errorMessage += "Device hung";
+            break;
+        case DXGI_ERROR_INVALID_CALL:
+            errorMessage += "Invalid call";
+            break;
+        case DXGI_ERROR_WAS_STILL_DRAWING:
+            errorMessage += "Still drawing";
+            break;
+        case DXGI_ERROR_FRAME_STATISTICS_DISJOINT:
+            errorMessage += "Frame statistics disjoint";
+            break;
+        case DXGI_ERROR_GRAPHICS_VIDPN_SOURCE_IN_USE:
+            errorMessage += "Graphics video source in use";
+            break;
+        case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+            errorMessage += "Driver internal error";
+            break;
+        case DXGI_ERROR_NONEXCLUSIVE:
+            errorMessage += "Non-exclusive mode";
+            break;
+        case DXGI_ERROR_NOT_CURRENTLY_AVAILABLE:
+            errorMessage += "Not currently available";
+            break;
+        case DXGI_ERROR_REMOTE_CLIENT_DISCONNECTED:
+            errorMessage += "Remote client disconnected";
+            break;
+        case DXGI_ERROR_REMOTE_OUTOFMEMORY:
+            errorMessage += "Remote out of memory";
+            break;
+        case E_ACCESSDENIED:
+            errorMessage += "Access denied";
+            break;
+        case E_INVALIDARG:
+            errorMessage += "Invalid argument";
+            break;
+        case E_OUTOFMEMORY:
+            errorMessage += "Out of memory";
+            break;
+        case E_FAIL:
+            errorMessage += "General failure";
+            break;
+        default:
+            errorMessage += "Unknown error (0x" + std::to_string(hr) + ")";
+            break;
+    }
+    
+    std::cerr << errorMessage << std::endl;
+    
+    // Attempt recovery for certain errors
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || 
+        hr == DXGI_ERROR_DEVICE_HUNG) {
+        std::cout << "Attempting DirectX device recovery..." << std::endl;
+        if (recoverDirectXDevice()) {
+            std::cout << "DirectX device recovery successful" << std::endl;
+        } else {
+            std::cerr << "DirectX device recovery failed" << std::endl;
+        }
+    }
 }
 
 bool OptimizedScreenCapture::isDirectXDeviceLost() {

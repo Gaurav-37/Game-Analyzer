@@ -59,7 +59,7 @@ g++ -std=c++17 -O3 -march=native -fopenmp -flto -ffast-math -mwindows ^
     -DOPENCV_CUDA_AVAILABLE=0 ^
     src/main.cpp src/ui_framework.cpp src/popup_dialogs.cpp ^
     src/advanced_ocr.cpp src/optimized_screen_capture.cpp ^
-    src/game_analytics.cpp src/thread_manager.cpp src/cuda_support.cpp ^
+    src/game_analytics.cpp src/thread_manager.cpp src/cuda_support.cpp src/performance_monitor.cpp ^
     -o GameAnalyzer.exe ^
     -L"C:\msys64\mingw64\lib" ^
     -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_highgui -lopencv_dnn -lopencv_video ^

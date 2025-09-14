@@ -1,4 +1,5 @@
 #include "advanced_ocr.h"
+#include "performance_monitor.h"
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 #include <iostream>
@@ -111,6 +112,7 @@ void AdvancedOCR::cleanup() {
 }
 
 std::vector<AdvancedOCR::TextRegion> AdvancedOCR::detectText(const cv::Mat& frame, const std::string& gameName) {
+    TIMED_OPERATION("OCR Text Detection");
     std::lock_guard<std::mutex> lock(processingMutex);
     
     if (!initialized) return {};
