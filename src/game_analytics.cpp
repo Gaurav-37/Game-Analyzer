@@ -252,10 +252,16 @@ cv::Mat GameEventDetector::calculateOpticalFlow(const cv::Mat& prevFrame, const 
 
 float GameEventDetector::calculateMotionMagnitude(const cv::Mat& flow) {
     if (flow.empty()) return 0.0f;
-    
+    if (flow.channels() != 2) return 0.0f;
+
+    // Split 2-channel flow into x and y components and compute magnitude
+    std::vector<cv::Mat> flowChannels(2);
+    cv::split(flow, flowChannels);
+
     cv::Mat magnitude;
-    cv::magnitude(flow.reshape(2), cv::Mat(), magnitude);
-    
+    cv::magnitude(flowChannels[0], flowChannels[1], magnitude);
+
+    if (magnitude.empty()) return 0.0f;
     return static_cast<float>(cv::mean(magnitude)[0]);
 }
 
